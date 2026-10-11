@@ -2,8 +2,13 @@
 
 **One GitHub poller for many coding agents.**
 
-[![CI](https://github.com/danielnc/prhub/actions/workflows/ci.yml/badge.svg)](https://github.com/danielnc/prhub/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/danielnc/prhub/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/danielnc/prhub/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/danielnc/prhub/badge)](https://scorecard.dev/viewer/?uri=github.com/danielnc/prhub)
+[![PyPI](https://img.shields.io/pypi/v/prhub)](https://pypi.org/project/prhub/)
+[![Python versions](https://img.shields.io/pypi/pyversions/prhub)](https://pypi.org/project/prhub/)
+[![Codecov](https://codecov.io/gh/danielnc/prhub/graph/badge.svg)](https://codecov.io/gh/danielnc/prhub)
+[![CodeRabbit reviews](https://img.shields.io/coderabbit/prs/github/danielnc/prhub?label=CodeRabbit%20reviews)](https://coderabbit.ai)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Coding agents (Claude Code, Codex, Cursor, …) spend a lot of their time waiting: for CI on the PR they just pushed,
 for a review, for a merge, for the deploy. Left alone, each one waits the same way, with its own polling loop:

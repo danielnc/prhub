@@ -8,8 +8,8 @@ welcome.
 ```bash
 git clone https://github.com/danielnc/prhub && cd prhub
 uv sync                       # pytest, pytest-cov and ruff; prhub itself has no dependencies
-uv run pytest -q              # offline: GitHub is never called
-uv run ruff check .
+make check                    # ruff and the offline test suite: GitHub is never called
+pre-commit install            # optional: the gitleaks hook blocks commits that contain tokens
 ```
 
 To run your checkout for real, point it at a scratch state directory so it does not disturb an installed daemon:
@@ -20,8 +20,9 @@ PRHUB_HOME=/tmp/prhub-dev uv run python -m prhub status
 ```
 
 CI (`.github/workflows/ci.yml`) runs on every pull request: pytest on Python 3.11 to 3.14, ruff, a build and
-clean-venv install of the wheel, and a gitleaks scan of the full history. Its `ci` job must pass. CodeQL also
-reviews pull requests. Releases are cut by the maintainer: see [docs/releasing.md](docs/releasing.md).
+clean-venv install of the wheel, and a gitleaks scan of the full history. Its `ci` job must pass, and `main` only
+changes through pull requests. CodeQL and CodeRabbit also review pull requests.
+Releases are cut by the maintainer: see [docs/releasing.md](docs/releasing.md).
 
 ## Making a change
 

@@ -43,7 +43,7 @@ jobs:
       # Coverage is measured on one Python version only, and uploading it can never fail CI.
       - name: pytest with coverage
         if: matrix.python == '3.13'
-        run: uv run pytest -q --cov=prhub --cov-report=xml --cov-report=term
+        run: uv run pytest -q --cov=prhub --cov-report=xml --cov-report=term-missing --cov-fail-under=90
 
       - name: Upload coverage to Codecov
         if: matrix.python == '3.13'

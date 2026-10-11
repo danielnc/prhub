@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prhub"
+dynamic = ["version"]
+description = "One GitHub poller for many coding agents: they wait on local PR and deploy state instead of each polling the API"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = []
+authors = [{ name = "prhub contributors" }]
+keywords = ["github", "pull-requests", "rate-limit", "ci", "deployments", "coding-agents", "claude-code", "codex", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+
+[project.urls]
+Homepage = "https://github.com/danielnc/prhub"
+Documentation = "https://github.com/danielnc/prhub#readme"
+Repository = "https://github.com/danielnc/prhub"
+Issues = "https://github.com/danielnc/prhub/issues"
+Changelog = "https://github.com/danielnc/prhub/blob/main/CHANGELOG.md"
+
+[project.scripts]
+prhub = "prhub.cli:main"
+
+[tool.hatch.version]
+path = "prhub/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["prhub"]
+
+[tool.hatch.build.targets.sdist]
+include = ["prhub/", "tests/", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-cov", "ruff"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+ignore = ["E501"]

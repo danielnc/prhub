@@ -1,0 +1,4 @@
+title = "prhub gitleaks config"
+
+[extend]
+useDefault = true

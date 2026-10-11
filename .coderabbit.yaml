@@ -1,0 +1,53 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit review settings. The rules below restate AGENTS.md.
+language: en
+tone_instructions: >-
+  Be concise and specific. Flag real problems only: bugs, contract or privacy regressions, missing tests, broken
+  docs. No praise, no restating the diff, no style nits that ruff would catch.
+
+reviews:
+  profile: chill
+  high_level_summary: true
+  poem: false
+  sequence_diagrams: false
+  collapse_walkthrough: true
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!uv.lock"
+  path_instructions:
+    - path: "**"
+      instructions: >-
+        This repository is public. Flag any personal data in code, tests, docs, or commit messages: real names,
+        emails, hostnames, IPs, home paths (/Users/..., /home/...), private repository, organization or company
+        names. Examples must use acme/api and example.com. Tokens and .env contents must never be committed.
+        Measured numbers must say whose machine, how many PRs, and when.
+    - path: "prhub/**"
+      instructions: >-
+        Contract, check every change against it: (1) Only the daemon calls GitHub: state, wait, list, status and
+        the hook read local files and must never make an API call, because agents run them in loops. (2) The
+        GitHub token comes from `gh auth token`, is held only in memory, goes only to https://api.github.com, and
+        is never written to a state file, the log, or an error message. (3) Readiness fails closed: `done`,
+        `green` and `deployed` must never be met on missing or ambiguous data, and a positive check (an approval
+        of the current head) is preferred over a negation. (4) The hook fails open: when the daemon is not
+        healthy, `prhub hook claude` allows everything. (5) A GitHub rate limit is not an outage: waits keep
+        waiting and status says PAUSED. (6) The runtime is standard-library only. (7) Changing what a condition
+        means is a breaking change for the agents that wait on it: it needs a CHANGELOG entry and a test.
+    - path: "tests/**"
+      instructions: >-
+        Tests must stay offline: GraphQL and REST responses are built by hand in GitHub's shape, and state goes
+        to a temporary PRHUB_HOME. Flag any test that needs network, a real `gh`, or the developer's own config,
+        state directory, or PRHUB_* environment.
+    - path: "docs/agents.md"
+      instructions: >-
+        This is what users paste into their agents' instructions. Keep it short, exact, and consistent with the
+        CLI's commands, conditions, options and exit codes in prhub/cli.py.
+    - path: ".github/workflows/**"
+      instructions: >-
+        Actions must be pinned to full commit SHAs with a version comment, permissions least-privilege
+        (workflow default contents: read), and no secrets or tokens in the repository.
+  pre_merge_checks:
+    docstrings:
+      mode: "off"

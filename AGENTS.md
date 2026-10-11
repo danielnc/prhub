@@ -11,8 +11,8 @@ A standard-library-only Python package (`prhub/`) with one daemon and a CLI that
 
 ```bash
 uv sync                    # dev tools only (pytest, pytest-cov, ruff); the runtime needs nothing
-uv run pytest -q           # offline test suite; must pass before every commit
-uv run ruff check .        # lint; must pass before every commit
+make check                 # ruff + the offline test suite; must pass before every commit
+make check-secrets         # gitleaks over the full history
 PRHUB_HOME=/tmp/prhub-dev uv run python -m prhub daemon --once   # one real poll, isolated from an installed daemon
 ```
 

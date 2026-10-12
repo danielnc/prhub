@@ -37,9 +37,11 @@ OpenID Connect, so no API token is stored anywhere. Only a maintainer can publis
    ```
 
 3. The tag starts the workflow. It checks that the tag equals `v` + `prhub.__version__`, runs ruff and the tests,
-   builds the sdist and wheel, and installs the wheel in a clean venv. Then, in parallel:
-   - it uploads to PyPI (with PEP 740 attestations), after your approval of the `pypi` environment if you set one;
-   - the SLSA generator signs build provenance for the wheel and sdist, and attaches `prhub.intoto.jsonl` to the
-     release, followed by the wheel and sdist themselves.
+   builds the sdist and wheel, and installs the wheel in a clean venv. Then, in order:
+   1. the SLSA generator signs build provenance for the wheel and sdist, and attaches `prhub.intoto.jsonl` to the
+      release;
+   2. the wheel and sdist are attached to the release;
+   3. only then is the package uploaded to PyPI (with PEP 740 attestations), after your approval of the `pypi`
+      environment if you set one. If any earlier step fails, nothing reaches PyPI.
 
    Create the release before the tag exists (step 2 does both): the assets are attached to the release for the tag.

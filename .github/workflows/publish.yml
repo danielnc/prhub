@@ -99,7 +99,8 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: build
+    # Only after the provenance and the release assets are on GitHub: a PyPI version must never exist without them.
+    needs: [build, provenance, release-assets]
     runs-on: ubuntu-latest
     environment:
       name: pypi

@@ -9,7 +9,9 @@ on:
     - cron: "43 3 * * 0" # Sundays 03:43 UTC
   workflow_dispatch:
 
-permissions: read-all
+permissions:
+  contents: read
+  actions: read # code-change mode downloads the build and corpus of earlier runs from workflow artifacts
 
 concurrency:
   group: cflite-${{ github.event.pull_request.number || github.ref }}

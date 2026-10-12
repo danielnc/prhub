@@ -87,6 +87,7 @@ def watches() -> dict[str, dict]:
 def add_watch(ref: PRRef, by: str = "cli") -> None:
     w = watches()
     w.setdefault(str(ref), {"added_at": int(time.time()), "by": by})
+    w[str(ref)]["last_asked"] = int(time.time())  # the daemon reads anything asked about since its last read
     write_json(home() / "watch.json", w)
 
 
@@ -166,10 +167,23 @@ def degraded_since(d: dict | None = None) -> int | None:
     return since if since and d.get("last_error_transient") and retrying and _pid_alive(d.get("pid")) else None
 
 
+MAX_POLL_SECONDS = 900  # a poll still running after this long is stuck, not slow
+
+
+def polling_since(d: dict | None = None) -> int | None:
+    """When the alive daemon started the poll it is in the middle of, else None. A poll can take minutes when GitHub
+    or the machine is slow, and that is not an outage."""
+    d = daemon_state() if d is None else d
+    since = d.get("polling_since")
+    return since if since and time.time() - since < MAX_POLL_SECONDS and _pid_alive(d.get("pid")) else None
+
+
 def daemon_healthy(max_age: int = 300) -> bool:
-    """Doing its job: polled GitHub recently, or is alive and deliberately waiting out a rate limit or a run of
-    GitHub errors. Neither is an outage of prhub: agents polling by hand then would hit the same limit or errors."""
+    """Doing its job: finished a good poll recently, is in the middle of one, or is alive and deliberately waiting
+    out a rate limit or a run of GitHub errors. None of those is an outage of prhub: agents polling by hand then
+    would only hit the same limit or errors."""
     d = daemon_state()
-    if d.get("last_poll_ok") and time.time() - d["last_poll_ok"] < max_age:
+    done = d.get("last_poll_done") or d.get("last_poll_ok")
+    if d.get("last_poll_ok") and done and time.time() - done < max_age:
         return True
-    return rate_limited_until(d) is not None or degraded_since(d) is not None
+    return polling_since(d) is not None or rate_limited_until(d) is not None or degraded_since(d) is not None

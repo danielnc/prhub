@@ -16,6 +16,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
   the previous one. An unexpected error is logged and retried instead of stopping the daemon.
 - While GitHub keeps failing, `prhub status` says `DEGRADED` and `prhub wait` keeps waiting instead of reporting the
   daemon as down, so agents no longer fall back to polling by hand during a GitHub incident.
+- A poll that takes minutes (a slow GitHub or an overloaded machine) no longer reads as an outage: health counts a
+  poll in progress, and `status` shows it and how long the last one took.
+
+### Changed
+
+- Settled items cost less: a merged or closed PR that is still watched is re-read every 10 minutes and a commit whose
+  runs have all finished every 5, instead of every poll. Anything someone asks about since its last read is read on
+  the next poll, so a new `wait` still gets fresh data.
 
 ## [0.1.1] - 2026-10-12
 

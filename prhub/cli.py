@@ -243,7 +243,9 @@ def cmd_status(a, cfg) -> int:
               f"waiting on the last good state. Do not poll GitHub by hand meanwhile: it is failing for you too.")
     print(f"daemon: {'healthy' if healthy else 'NOT polling'} pid {d.get('pid')}  last poll {age}s ago  "
           f"interval {d.get('interval')}s  tracked {d.get('tracked')}  "
-          f"github budget {rate.get('remaining', '?')} left (reset {rate.get('resetAt', '?')})")
+          + (f"polling now ({int(time.time() - since)}s)  " if (since := store.polling_since(d)) else "")
+          + (f"last poll took {d['poll_seconds']}s  " if d.get("poll_seconds") else "")
+          + f"github budget {rate.get('remaining', '?')} left (reset {rate.get('resetAt', '?')})")
     if d.get("last_error"):
         print(f"last error: {d['last_error']}")
     if d.get("skipped"):

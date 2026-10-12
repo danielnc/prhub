@@ -151,6 +151,9 @@ def test_compare_errors(gh):
     Daemon().poll()  # an ordinary error leaves the answer unknown and asks again next poll
     assert store.read_commit(ref)["contains"] == {}
     gh.contains_answer = GitHubError("limit", rate_limited=True)
+    rec = store.read_commit(ref)
+    rec["fetched_at"] -= 1000  # due again: a finished commit is otherwise re-read only every few minutes
+    store.write_commit(ref, rec)
     with pytest.raises(GitHubError):
         Daemon().poll()
 
@@ -285,3 +288,70 @@ def test_skipped_items_are_counted(gh, monkeypatch):
     monkeypatch.setattr(daemon, "fetch_prs", lambda refs, token: ({API: pr_node()}, gh.rate))  # GitHub dropped #2
     Daemon().run(once=True)
     assert store.daemon_state()["skipped"] == 1
+
+
+
+# ---- cadence and long polls ----
+
+def test_a_merged_pr_is_reread_only_every_few_minutes_unless_asked(gh):
+    gh.open = []
+    store.add_watch(API)
+    gh.prs[API] = pr_node(state="MERGED")
+    d = Daemon()
+    d.poll()
+    assert gh.calls["prs"] == 1
+    d.poll()  # settled and just read: skipped
+    assert gh.calls["prs"] == 1
+    rec = store.read_pr(API)
+    rec["fetched_at"] -= 5
+    store.write_pr(API, rec)
+    store.add_watch(API)  # someone waits on it: read on the next poll
+    d.poll()
+    assert gh.calls["prs"] == 2
+    rec = store.read_pr(API)
+    rec["fetched_at"] -= daemon.CLOSED_RECHECK
+    store.write_pr(API, rec)
+    d.poll()
+    assert gh.calls["prs"] == 3
+
+
+def test_a_finished_commit_is_reread_only_every_few_minutes_unless_asked(gh):
+    ref = CommitRef("acme", "api", "aaaaaaa")
+    store.add_commit_watch(ref)
+    gh.commits[ref] = commit_node(OID)
+    d = Daemon()
+    d.poll()
+    d.poll()
+    assert gh.calls["commits"] == 1
+    rec = store.read_commit(ref)
+    rec["fetched_at"] -= 5
+    store.write_commit(ref, rec)
+    store.add_commit_watch(ref)
+    d.poll()
+    assert gh.calls["commits"] == 2
+
+
+def test_a_running_commit_is_read_every_poll(gh):
+    ref = CommitRef("acme", "api", "aaaaaaa")
+    store.add_commit_watch(ref)
+    gh.commits[ref] = commit_node(OID, runs=[("CI", "IN_PROGRESS", None)])
+    d = Daemon()
+    d.poll()
+    d.poll()
+    assert gh.calls["commits"] == 2
+
+
+def test_a_long_poll_is_not_an_outage():
+    now = int(time.time())
+    store.write_json(store.home() / "daemon.json", {"pid": os.getpid(), "last_poll_ok": now - 900,
+                                                    "polling_since": now - 400})
+    assert store.polling_since() == now - 400 and store.daemon_healthy()
+    store.write_json(store.home() / "daemon.json", {"pid": os.getpid(), "last_poll_ok": now - 2000,
+                                                    "polling_since": now - 1000})
+    assert store.polling_since() is None and not store.daemon_healthy()  # stuck, not slow
+
+
+def test_run_records_when_the_poll_ended(gh):
+    Daemon().run(once=True)
+    st = store.daemon_state()
+    assert st["polling_since"] is None and st["last_poll_done"] >= st["last_poll"] and "poll_seconds" in st

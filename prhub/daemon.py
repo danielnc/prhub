@@ -18,6 +18,8 @@ KEEP_CLOSED_WATCH = 3600    # a watched PR stays tracked this long after it clos
 KEEP_CLOSED_FILE = 7 * 86400
 KEEP_COMMIT_WATCH = 6 * 3600  # a commit stays tracked this long after the last state/wait that asked about it
 KEEP_COMMIT_FILE = 2 * 86400
+CLOSED_RECHECK = 600   # a merged/closed PR still being watched is re-read this often (it can be reopened)
+SETTLED_RECHECK = 300  # so is a commit whose runs have all finished (its deploy can still land later)
 TOKEN_TTL = 600  # re-read `gh auth token` this often; a slow or failing `gh` keeps the last good token meanwhile
 
 
@@ -78,6 +80,14 @@ class Daemon:
             log(f"keeping the previous token: {e}")
         return self.token
 
+    def due(self, rec: dict | None, watch: dict | None, settled: bool, recheck: int, now: float) -> bool:
+        """Whether to read an item this poll. Unsettled items are read every poll; settled ones every `recheck`
+        seconds, unless someone asked about them since the last read (a new `wait` needs fresh data)."""
+        if not rec or not settled:
+            return True
+        fetched = rec.get("fetched_at", 0)
+        return now - fetched >= recheck or (watch or {}).get("last_asked", 0) > fetched
+
     def tracked(self) -> set[PRRef]:
         refs = set(self.open_refs)
         for k in store.watches():
@@ -96,7 +106,13 @@ class Daemon:
             found, rate = discover_open(self.cfg["search"], token)
             self.open_refs = set(found)
             self.last_discover = now
-        refs = sorted(self.tracked())
+        w = store.watches()
+        refs = []
+        for ref in sorted(self.tracked()):
+            rec = store.read_pr(ref)
+            closed = (rec or {}).get("summary", {}).get("state") in ("MERGED", "CLOSED") and ref not in self.open_refs
+            if self.due(rec, w.get(str(ref)), closed, CLOSED_RECHECK, now):
+                refs.append(ref)
         data, rate2 = fetch_prs(refs, token) if refs else ({}, {})
         rate = rate2 or rate
         went_red: list[PRRef] = []
@@ -135,11 +151,16 @@ class Daemon:
 
     def poll_commits(self, token: str, now: float) -> tuple[dict, int]:
         refs = []
-        for k in store.commit_watches():
+        for k, watch in store.commit_watches().items():
             try:
-                refs.append(commits.resolve(k))
+                ref = commits.resolve(k)
             except ValueError:
-                pass
+                continue
+            rec = store.read_commit(ref)
+            s = (rec or {}).get("summary")
+            settled = bool(rec and (rec.get("missing") or (s and commits.rollup(s)[0] in ("SUCCESS", "FAILURE"))))
+            if self.due(rec, watch, settled, SETTLED_RECHECK, now):
+                refs.append(ref)
         if not refs:
             return {}, 0, 0
         data, rate = fetch_commits(refs, token)
@@ -196,6 +217,8 @@ class Daemon:
         interval = self.cfg["interval"]
         while True:
             started = time.time()
+            self.state["polling_since"] = int(started)
+            store.write_json(store.home() / "daemon.json", self.state)
             try:
                 res = self.poll()
                 interval = adaptive_interval(self.cfg["interval"], res["rate"])
@@ -203,7 +226,8 @@ class Daemon:
                                    "tracked_commits": res["commits"], "skipped": res["skipped"],
                                    "rate": res["rate"], "interval": interval, "rate_limited_until": None,
                                    "degraded_since": None, "last_error_transient": None})
-                log(f"poll ok: {res['tracked']} tracked, {res['commits']} commits, {res['changed']} changed, "
+                log(f"poll ok in {int(time.time() - started)}s: {res['tracked']} PRs read, {res['commits']} commits read, "
+                    f"{res['changed']} changed, "
                     + (f"{res['skipped']} skipped (GitHub error), " if res["skipped"] else "")
                     + f"rate {res['rate'].get('remaining')} left, next in {interval}s")
             except GitHubError as e:
@@ -225,6 +249,9 @@ class Daemon:
                                    "interval": interval, "last_error_transient": False, "degraded_since": None})
                 log(f"poll crashed: {traceback.format_exc()}next in {interval}s")
             self.state["last_poll"] = int(started)
+            self.state["last_poll_done"] = int(time.time())
+            self.state["poll_seconds"] = int(time.time() - started)
+            self.state["polling_since"] = None
             store.write_json(store.home() / "daemon.json", self.state)
             if once:
                 return

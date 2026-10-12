@@ -48,8 +48,9 @@ prhub status                                      # daemon health and the GitHub
 
 - **Discovery.** Every few minutes the daemon runs one search for your open PRs (`is:pr is:open author:@me`, or
   your own query), so agents don't have to register anything.
-- **Polling.** Every minute, one GraphQL request reads every tracked PR (40 per request) and every watched commit,
-  together with each repo's recent deployments. With 30 to 40 open PRs that costs about 1 point per poll on the
+- **Polling.** Every minute, batched GraphQL requests read every open tracked PR (20 per request) and every watched
+  commit (5 per request), together with each repo's recent deployments. Settled items are read less often: a merged
+  or closed PR every 10 minutes and a commit whose runs have finished every 5, unless someone asks about them. With 30 to 40 open PRs that costs about 1 point per poll on the
   author's machine, roughly 60 to 120 points an hour, however many agents are waiting.
 - **Waiting.** `prhub wait` tracks whatever it is asked about, nudges the daemon for an early poll (at most one
   every 15 s), then reads local files until the condition holds. Only data fetched *after* the wait started is

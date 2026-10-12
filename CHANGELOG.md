@@ -5,6 +5,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Release provenance: each GitHub release carries the wheel, the sdist and their SLSA build provenance
+  (`prhub.intoto.jsonl`). SECURITY.md shows how to verify them.
+- Fuzzing with ClusterFuzzLite: the PR/commit name parsers and the hook's command matcher, on every pull request
+  that touches them and weekly.
+
 ## [0.1.0] - 2026-10-11
 
 First public release.

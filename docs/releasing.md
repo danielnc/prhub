@@ -30,14 +30,16 @@ OpenID Connect, so no API token is stored anywhere. Only a maintainer can publis
 
 1. On a branch, bump `__version__` in `prhub/__init__.py` (the only place the version lives) and move the
    `[Unreleased]` entries in `CHANGELOG.md` under the new version and date. Merge the pull request.
-2. Tag the merge commit on `main` and push the tag:
+2. Create the GitHub release on `main`, with the CHANGELOG section as its notes. This creates and pushes the tag:
 
    ```bash
-   git tag -a v0.2.0 -m "prhub 0.2.0"
-   git push origin v0.2.0
+   gh release create v0.2.0 --target main --title "prhub 0.2.0" --notes "<the CHANGELOG section>"
    ```
 
-3. The workflow checks that the tag equals `v` + `prhub.__version__`, runs ruff and the tests, builds the sdist and
-   wheel, installs the wheel in a clean venv, and then waits for your approval of the `pypi` environment before
-   uploading.
-4. Create a GitHub release from the tag with the CHANGELOG section as its notes.
+3. The tag starts the workflow. It checks that the tag equals `v` + `prhub.__version__`, runs ruff and the tests,
+   builds the sdist and wheel, and installs the wheel in a clean venv. Then, in parallel:
+   - it uploads to PyPI (with PEP 740 attestations), after your approval of the `pypi` environment if you set one;
+   - the SLSA generator signs build provenance for the wheel and sdist, and attaches `prhub.intoto.jsonl` to the
+     release, followed by the wheel and sdist themselves.
+
+   Create the release before the tag exists (step 2 does both): the assets are attached to the release for the tag.

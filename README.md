@@ -48,8 +48,9 @@ prhub status                                      # daemon health and the GitHub
 
 - **Discovery.** Every few minutes the daemon runs one search for your open PRs (`is:pr is:open author:@me`, or
   your own query), so agents don't have to register anything.
-- **Polling.** Every minute, one GraphQL request reads every tracked PR (40 per request) and every watched commit,
-  together with each repo's recent deployments. With 30 to 40 open PRs that costs about 1 point per poll on the
+- **Polling.** Every minute, batched GraphQL requests read every open tracked PR (20 per request) and every watched
+  commit (5 per request), together with each repo's recent deployments. Settled items are read less often: a merged
+  or closed PR every 10 minutes and a commit whose runs have finished every 5, unless someone asks about them. With 30 to 40 open PRs that costs about 1 point per poll on the
   author's machine, roughly 60 to 120 points an hour, however many agents are waiting.
 - **Waiting.** `prhub wait` tracks whatever it is asked about, nudges the daemon for an early poll (at most one
   every 15 s), then reads local files until the condition holds. Only data fetched *after* the wait started is
@@ -57,6 +58,10 @@ prhub status                                      # daemon health and the GitHub
 - **Backing off.** Below 1,000 points left the daemon slows to every 3 minutes, below 300 to every 10, and when
   GitHub rate-limits it, it waits for the reset. During a rate limit `prhub status` says `PAUSED`, and waits keep
   waiting rather than failing, so agents don't fall back to polling by hand against the same exhausted limit.
+- **Riding out GitHub errors.** PRs are read 20 per request and commits 5. When GitHub times out on a request
+  (a 502/504, or its "Something went wrong" on a heavy query), the daemon splits the batch and retries, and a PR or
+  commit that still fails keeps its last state until the next poll. If GitHub keeps failing, `prhub status` says
+  `DEGRADED` and waits keep waiting on the last good state, as during a rate limit.
 
 ## Install
 

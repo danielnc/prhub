@@ -158,3 +158,87 @@ def test_contains_errors(urlopen):
     queue.append(TimeoutError("slow"))
     with pytest.raises(GitHubError, match="network"):
         github.contains("acme", "api", "aaa", "bbb", "t")
+
+
+# ---- transient errors and batch splitting ----
+
+def test_transient_errors_are_marked(urlopen):
+    _, queue = urlopen
+    queue += [http_error(504, "<html>gateway timeout</html>"), http_error(401, "Bad credentials"),
+              {"errors": [{"message": "Something went wrong while executing your query on 2026-10-12."}]}]
+    with pytest.raises(GitHubError) as e:
+        github.graphql("q", token="t")
+    assert e.value.transient
+    with pytest.raises(GitHubError) as e:
+        github.graphql("q", token="t")
+    assert not e.value.transient  # bad credentials need a person, not a retry
+    with pytest.raises(GitHubError) as e:
+        github.graphql("q", token="t")
+    assert e.value.transient
+
+
+def test_a_batch_github_times_out_on_is_split_and_retried(urlopen):
+    calls, queue = urlopen
+    a, b = PRRef("acme", "api", 1), PRRef("acme", "api", 2)
+    queue += [http_error(502, "bad gateway"),
+              {"data": {"p0": {"pullRequest": {"number": 1}}}},
+              {"data": {"p0": {"pullRequest": {"number": 2}}}}]
+    out, _ = github.fetch_prs([a, b], "t", chunk=2)
+    assert out == {a: {"number": 1}, b: {"number": 2}} and len(calls) == 3
+
+
+def test_one_item_that_keeps_failing_is_left_out(urlopen):
+    _, queue = urlopen
+    a, b = PRRef("acme", "api", 1), PRRef("acme", "api", 2)
+    queue += [http_error(502, "x"), http_error(502, "x"), {"data": {"p0": {"pullRequest": {"number": 2}}}}]
+    out, _ = github.fetch_prs([a, b], "t", chunk=2)
+    assert out == {b: {"number": 2}}  # a is skipped this poll; the daemon keeps its previous record
+
+
+def test_an_outage_stops_the_splitting(urlopen):
+    calls, queue = urlopen
+    refs = [PRRef("acme", "api", n) for n in range(1, 9)]
+    queue += [http_error(503, "down") for _ in range(20)]
+    with pytest.raises(GitHubError) as e:
+        github.fetch_prs(refs, "t", chunk=8)
+    assert e.value.transient and len(calls) == github.MAX_TRANSIENT_FAILURES + 1
+
+
+def test_non_transient_errors_are_not_split(urlopen):
+    calls, queue = urlopen
+    queue.append(http_error(401, "Bad credentials"))
+    with pytest.raises(GitHubError):
+        github.fetch_prs([PRRef("acme", "api", 1), PRRef("acme", "api", 2)], "t", chunk=2)
+    assert len(calls) == 1
+
+
+def test_a_slow_gh_is_a_transient_error(monkeypatch):
+    def slow(*a, **k):
+        raise subprocess.TimeoutExpired(a[0], 30)
+    monkeypatch.setattr(github.subprocess, "run", slow)
+    with pytest.raises(GitHubError, match="took longer") as e:
+        github.gh_token()
+    assert e.value.transient
+
+
+def test_a_missing_gh_is_not_transient(monkeypatch):
+    def missing(*a, **k):
+        raise FileNotFoundError("gh")
+    monkeypatch.setattr(github.subprocess, "run", missing)
+    with pytest.raises(GitHubError, match="cannot run gh") as e:
+        github.gh_token()
+    assert not e.value.transient
+
+
+def test_one_bad_item_among_many_is_isolated_without_counting_as_an_outage(monkeypatch):
+    refs = [PRRef("acme", "api", n) for n in range(1, 21)]
+    bad = refs[13]
+
+    def fake_graphql(query, token=None):
+        part = [r for r in refs if f"pullRequest(number: {r.number})" in query]
+        if bad in part:
+            raise GitHubError("HTTP 502", transient=True)
+        return {f"p{j}": {"pullRequest": {"number": r.number}} for j, r in enumerate(part)}
+    monkeypatch.setattr(github, "graphql", fake_graphql)
+    out, _ = github.fetch_prs(refs, "t", chunk=20)
+    assert set(out) == set(refs) - {bad}

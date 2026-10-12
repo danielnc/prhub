@@ -274,3 +274,13 @@ def test_python_dash_m(monkeypatch, capsys):
     with pytest.raises(SystemExit) as e:
         runpy.run_module("prhub", run_name="__main__")
     assert e.value.code == 0 and capsys.readouterr().out.startswith("prhub ")
+
+
+def test_status_degraded_and_skipped(capsys):
+    store.write_json(store.home() / "daemon.json", {"pid": __import__("os").getpid(), "last_poll": int(time.time()),
+                                                    "interval": 120, "degraded_since": int(time.time()) - 600,
+                                                    "last_error_transient": True, "skipped": 2,
+                                                    "last_error": "HTTP 504: gateway timeout"})
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "DEGRADED since" in out and "skipped 2" in out

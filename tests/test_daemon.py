@@ -151,6 +151,9 @@ def test_compare_errors(gh):
     Daemon().poll()  # an ordinary error leaves the answer unknown and asks again next poll
     assert store.read_commit(ref)["contains"] == {}
     gh.contains_answer = GitHubError("limit", rate_limited=True)
+    rec = store.read_commit(ref)
+    rec["fetched_at"] -= 1000  # due again: a finished commit is otherwise re-read only every few minutes
+    store.write_commit(ref, rec)
     with pytest.raises(GitHubError):
         Daemon().poll()
 
@@ -220,3 +223,139 @@ def test_a_nudge_ends_the_sleep_early(monkeypatch):
     t0 = time.time()
     Daemon().sleep(3600, started)
     assert time.time() - t0 < 5 and not (store.home() / "nudge").exists()
+
+
+# ---- resilience ----
+
+def test_the_token_is_reused_and_a_slow_gh_keeps_the_last_one(gh, monkeypatch):
+    calls = []
+
+    def token():
+        calls.append(1)
+        if len(calls) > 1:
+            raise GitHubError("`gh auth token` took longer than 30s", transient=True)
+        return "tok"
+    monkeypatch.setattr(daemon, "gh_token", token)
+    d = Daemon()
+    assert d.get_token() == "tok" and d.get_token() == "tok" and len(calls) == 1  # cached
+    d.token_at = 0  # expired: the refresh fails transiently, so the old token is kept
+    assert d.get_token() == "tok" and len(calls) == 2
+
+
+def test_without_any_token_a_slow_gh_is_an_error(gh, monkeypatch):
+    def slow():
+        raise GitHubError("slow", transient=True)
+    monkeypatch.setattr(daemon, "gh_token", slow)
+    with pytest.raises(GitHubError):
+        Daemon().get_token()
+
+
+def test_github_errors_make_the_daemon_degraded_not_down(gh, monkeypatch):
+    def gateway(*a):
+        raise GitHubError("HTTP 504: gateway timeout", transient=True)
+    monkeypatch.setattr(daemon, "discover_open", gateway)
+    d = Daemon()
+    d.run(once=True)
+    st = store.daemon_state()
+    since = st["degraded_since"]
+    assert since and st["interval"] == 120 and store.degraded_since() == since and store.daemon_healthy()
+    d.run(once=True)  # still failing: the start of the trouble is kept
+    assert store.daemon_state()["degraded_since"] == since
+    monkeypatch.setattr(daemon, "discover_open", gh.discover_open)
+    d.run(once=True)  # recovered
+    assert store.daemon_state()["degraded_since"] is None and store.degraded_since() is None
+
+
+def test_permanent_errors_are_not_degraded(gh, monkeypatch):
+    def denied(*a):
+        raise GitHubError("HTTP 401: Bad credentials")
+    monkeypatch.setattr(daemon, "discover_open", denied)
+    Daemon().run(once=True)
+    assert store.degraded_since() is None and not store.daemon_healthy()
+
+
+def test_a_surprise_exception_is_logged_not_fatal(gh, monkeypatch):
+    def boom(*a):
+        raise KeyError("pullRequest")
+    monkeypatch.setattr(daemon, "discover_open", boom)
+    Daemon().run(once=True)
+    assert "KeyError" in store.daemon_state()["last_error"]
+
+
+def test_skipped_items_are_counted(gh, monkeypatch):
+    other = PRRef("acme", "api", 2)
+    gh.open = [API, other]
+    monkeypatch.setattr(daemon, "fetch_prs", lambda refs, token: ({API: pr_node()}, gh.rate))  # GitHub dropped #2
+    Daemon().run(once=True)
+    st = store.daemon_state()
+    assert st["skipped"] == 1 and st["degraded_since"] and store.degraded_since() and "previous state" in st["last_error"]
+    monkeypatch.setattr(daemon, "fetch_prs", gh.fetch_prs)
+    Daemon().run(once=True)  # nothing skipped: degraded clears
+    assert store.daemon_state()["degraded_since"] is None
+
+
+
+# ---- cadence and long polls ----
+
+def test_a_merged_pr_is_reread_only_every_few_minutes_unless_asked(gh):
+    gh.open = []
+    store.add_watch(API)
+    gh.prs[API] = pr_node(state="MERGED")
+    d = Daemon()
+    d.poll()
+    assert gh.calls["prs"] == 1
+    d.poll()  # settled and just read: skipped
+    assert gh.calls["prs"] == 1
+    rec = store.read_pr(API)
+    rec["fetched_at"] -= 5
+    store.write_pr(API, rec)
+    store.add_watch(API)  # someone waits on it: read on the next poll
+    d.poll()
+    assert gh.calls["prs"] == 2
+    rec = store.read_pr(API)
+    rec["fetched_at"] -= daemon.CLOSED_RECHECK
+    store.write_pr(API, rec)
+    d.poll()
+    assert gh.calls["prs"] == 3
+
+
+def test_a_finished_commit_is_reread_only_every_few_minutes_unless_asked(gh):
+    ref = CommitRef("acme", "api", "aaaaaaa")
+    store.add_commit_watch(ref)
+    gh.commits[ref] = commit_node(OID)
+    d = Daemon()
+    d.poll()
+    d.poll()
+    assert gh.calls["commits"] == 1
+    rec = store.read_commit(ref)
+    rec["fetched_at"] -= 5
+    store.write_commit(ref, rec)
+    store.add_commit_watch(ref)
+    d.poll()
+    assert gh.calls["commits"] == 2
+
+
+def test_a_running_commit_is_read_every_poll(gh):
+    ref = CommitRef("acme", "api", "aaaaaaa")
+    store.add_commit_watch(ref)
+    gh.commits[ref] = commit_node(OID, runs=[("CI", "IN_PROGRESS", None)])
+    d = Daemon()
+    d.poll()
+    d.poll()
+    assert gh.calls["commits"] == 2
+
+
+def test_a_long_poll_is_not_an_outage():
+    now = int(time.time())
+    store.write_json(store.home() / "daemon.json", {"pid": os.getpid(), "last_poll_ok": now - 900,
+                                                    "polling_since": now - 400})
+    assert store.polling_since() == now - 400 and store.daemon_healthy()
+    store.write_json(store.home() / "daemon.json", {"pid": os.getpid(), "last_poll_ok": now - 2000,
+                                                    "polling_since": now - 1000})
+    assert store.polling_since() is None and not store.daemon_healthy()  # stuck, not slow
+
+
+def test_run_records_when_the_poll_ended(gh):
+    Daemon().run(once=True)
+    st = store.daemon_state()
+    assert st["polling_since"] is None and st["last_poll_done"] >= st["last_poll"] and "poll_seconds" in st

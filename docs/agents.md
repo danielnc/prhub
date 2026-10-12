@@ -29,9 +29,9 @@ Exit codes: 0 met, 1 timeout, 3 can never happen (PR closed, run or deploy faile
 - Run long waits in the background if you have other work, and act on the result when it returns.
 - Never loop over `gh pr checks`, `gh pr view`, `gh run watch`, `gh run view` or `gh api` with `sleep`, and never
   use `gh pr checks --watch` or `gh run watch`. One-off reads and all writes (`gh pr create`, `gh pr merge`) are fine.
-- `PAUSED by the GitHub rate limit` in `prhub status` is not an outage: keep waiting, it resumes by itself at the
-  reset, and polling by hand would only hit the same exhausted limit. Only if it says `NOT polling`, check by hand,
-  no more often than every 3 minutes.
+- `PAUSED` (a GitHub rate limit) and `DEGRADED` (GitHub returning errors) in `prhub status` are not outages of
+  prhub: keep waiting, it recovers by itself, and polling by hand would only hit the same limit or errors. Only if
+  it says `NOT polling`, check by hand, no more often than every 3 minutes.
 - `done` already requires an approval of the current head. Still run your own pre-merge checks if your merge
   rules need more than GitHub's review decision, CI and merge state.
 ```

@@ -30,15 +30,24 @@ FAILING_FIELDS = """
 
 
 class GitHubError(RuntimeError):
-    def __init__(self, msg: str, rate_limited: bool = False, reset_at: str | None = None):
+    """A failed call. `transient` means retrying later should work: a 5xx, a network error, GitHub's own query
+    timeout, or a slow `gh`. Anything else (bad credentials, a malformed query) needs a person."""
+
+    def __init__(self, msg: str, rate_limited: bool = False, reset_at: str | None = None, transient: bool = False):
         super().__init__(msg)
         self.rate_limited = rate_limited
         self.reset_at = reset_at
+        self.transient = transient
 
 
-def gh_token() -> str:
-    """The token `gh` is logged in with. Read per poll, so `gh auth` changes are picked up."""
-    out = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=10)
+def gh_token(timeout: int = 30) -> str:
+    """The token `gh` is logged in with."""
+    try:
+        out = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise GitHubError(f"`gh auth token` took longer than {timeout}s", transient=True) from None
+    except OSError as e:
+        raise GitHubError(f"cannot run gh: {e}") from None
     tok = out.stdout.strip()
     if not tok:
         raise GitHubError("no GitHub token: run `gh auth login`")
@@ -59,14 +68,16 @@ def graphql(query: str, variables: dict | None = None, token: str | None = None,
         text = e.read().decode("utf-8", "replace")[:300]
         limited = e.code in (403, 429) and "rate limit" in text.lower()
         raise GitHubError(f"HTTP {e.code}: {text}", rate_limited=limited,
-                          reset_at=e.headers.get("x-ratelimit-reset")) from None
+                          reset_at=e.headers.get("x-ratelimit-reset"), transient=e.code >= 500) from None
     except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise GitHubError(f"network: {e}") from None
+        raise GitHubError(f"network: {e}", transient=True) from None
     errors = payload.get("errors") or []
     if errors and not payload.get("data"):
         msg = "; ".join(err.get("message", "?") for err in errors)
         limited = any(err.get("type") == "RATE_LIMITED" for err in errors) or "rate limit" in msg.lower()
-        raise GitHubError(f"GraphQL: {msg}", rate_limited=limited)
+        # "Something went wrong while executing your query" is GitHub timing out on a heavy query.
+        raise GitHubError(f"GraphQL: {msg}", rate_limited=limited,
+                          transient="something went wrong" in msg.lower() or "timeout" in msg.lower())
     return payload.get("data") or {}
 
 
@@ -100,17 +111,44 @@ def _alias_query(refs: list[PRRef], fields: str) -> str:
     return "query { rateLimit { cost remaining resetAt }\n" + "\n".join(parts) + "\n}"
 
 
-def fetch_prs(refs: list[PRRef], token: str, chunk: int = 40) -> tuple[dict[PRRef, dict | None], dict]:
-    """Full state of each PR, batched `chunk` per GraphQL call. A PR that no longer resolves maps to None."""
-    out: dict[PRRef, dict | None] = {}
+MAX_TRANSIENT_FAILURES = 4  # consecutive failures in one read: past this it is an outage, and splitting adds load
+
+
+def _batched(refs: list, build_query, read, token: str, chunk: int) -> tuple[dict, dict]:
+    """Read `refs` `chunk` per GraphQL call. When GitHub fails a call transiently (a 502/504, or its "Something went
+    wrong" timeout on a heavy query), split that batch in half and retry, down to single items. An item that still
+    fails is left out of the result, so one heavy PR or commit cannot stop all the others from being read; its
+    previous record is kept. Split halves go to the back of the queue, and any success resets the count, so more than
+    MAX_TRANSIENT_FAILURES consecutive failures mean an outage and raise, while one bad item among many is isolated."""
+    out: dict = {}
     rate: dict = {}
-    for i in range(0, len(refs), chunk):
-        part = refs[i:i + chunk]
-        d = graphql(_alias_query(part, PR_FIELDS), token=token)
+    failures = 0
+    pending = [refs[i:i + chunk] for i in range(0, len(refs), chunk)]
+    while pending:
+        part = pending.pop(0)
+        try:
+            d = graphql(build_query(part), token=token)
+        except GitHubError as e:
+            if not e.transient:
+                raise
+            failures += 1
+            if failures > MAX_TRANSIENT_FAILURES:
+                raise
+            if len(part) > 1:
+                pending += [part[:len(part) // 2], part[len(part) // 2:]]
+            continue
+        failures = 0
         rate = d.get("rateLimit") or rate
         for j, r in enumerate(part):
-            out[r] = ((d.get(f"p{j}") or {}).get("pullRequest"))
+            out[r] = read(d, j)
     return out, rate
+
+
+def fetch_prs(refs: list[PRRef], token: str, chunk: int = 20) -> tuple[dict[PRRef, dict | None], dict]:
+    """Full state of each PR, batched `chunk` per GraphQL call. A PR that no longer resolves maps to None; a PR
+    GitHub could not return this time is missing from the result."""
+    return _batched(refs, lambda part: _alias_query(part, PR_FIELDS),
+                    lambda d, j: (d.get(f"p{j}") or {}).get("pullRequest"), token, chunk)
 
 
 def fetch_failing(refs: list[PRRef], token: str) -> dict[PRRef, list[dict]]:
@@ -134,18 +172,11 @@ def fetch_failing(refs: list[PRRef], token: str) -> dict[PRRef, list[dict]]:
     return out
 
 
-def fetch_commits(refs, token: str, chunk: int = 20) -> tuple[dict, dict]:
-    """Raw repository nodes (commit + its repo's recent deployments) per CommitRef, batched `chunk` per call."""
+def fetch_commits(refs, token: str, chunk: int = 5) -> tuple[dict, dict]:
+    """Raw repository nodes (commit + its repo's recent deployments) per CommitRef, batched `chunk` per call (each
+    one is heavy: up to 50 check suites and 30 deployments). A commit GitHub could not return is missing."""
     from .commits import alias_query
-    out: dict = {}
-    rate: dict = {}
-    for i in range(0, len(refs), chunk):
-        part = refs[i:i + chunk]
-        d = graphql(alias_query(part), token=token)
-        rate = d.get("rateLimit") or rate
-        for j, r in enumerate(part):
-            out[r] = d.get(f"c{j}")
-    return out, rate
+    return _batched(refs, alias_query, lambda d, j: d.get(f"c{j}"), token, chunk)
 
 
 def contains(owner: str, repo: str, sha: str, newer: str, token: str) -> bool:

@@ -287,7 +287,11 @@ def test_skipped_items_are_counted(gh, monkeypatch):
     gh.open = [API, other]
     monkeypatch.setattr(daemon, "fetch_prs", lambda refs, token: ({API: pr_node()}, gh.rate))  # GitHub dropped #2
     Daemon().run(once=True)
-    assert store.daemon_state()["skipped"] == 1
+    st = store.daemon_state()
+    assert st["skipped"] == 1 and st["degraded_since"] and store.degraded_since() and "previous state" in st["last_error"]
+    monkeypatch.setattr(daemon, "fetch_prs", gh.fetch_prs)
+    Daemon().run(once=True)  # nothing skipped: degraded clears
+    assert store.daemon_state()["degraded_since"] is None
 
 
 

@@ -222,10 +222,16 @@ class Daemon:
             try:
                 res = self.poll()
                 interval = adaptive_interval(self.cfg["interval"], res["rate"])
-                self.state.update({"last_poll_ok": int(started), "last_error": None, "tracked": res["tracked"],
-                                   "tracked_commits": res["commits"], "skipped": res["skipped"],
-                                   "rate": res["rate"], "interval": interval, "rate_limited_until": None,
-                                   "degraded_since": None, "last_error_transient": None})
+                # Items GitHub kept failing on were skipped and still show their previous state: that is degraded.
+                partial = res["skipped"] > 0
+                self.state.update({"last_poll_ok": int(started),
+                                   "last_error": f"GitHub failed to return {res['skipped']} PRs/commits; their "
+                                                 "previous state is kept" if partial else None,
+                                   "tracked": res["tracked"], "tracked_commits": res["commits"],
+                                   "skipped": res["skipped"], "rate": res["rate"], "interval": interval,
+                                   "rate_limited_until": None, "last_error_transient": partial or None,
+                                   "degraded_since": (self.state.get("degraded_since") or int(started))
+                                   if partial else None})
                 log(f"poll ok in {int(time.time() - started)}s: {res['tracked']} PRs read, {res['commits']} commits read, "
                     f"{res['changed']} changed, "
                     + (f"{res['skipped']} skipped (GitHub error), " if res["skipped"] else "")

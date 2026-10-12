@@ -228,3 +228,17 @@ def test_a_missing_gh_is_not_transient(monkeypatch):
     with pytest.raises(GitHubError, match="cannot run gh") as e:
         github.gh_token()
     assert not e.value.transient
+
+
+def test_one_bad_item_among_many_is_isolated_without_counting_as_an_outage(monkeypatch):
+    refs = [PRRef("acme", "api", n) for n in range(1, 21)]
+    bad = refs[13]
+
+    def fake_graphql(query, token=None):
+        part = [r for r in refs if f"pullRequest(number: {r.number})" in query]
+        if bad in part:
+            raise GitHubError("HTTP 502", transient=True)
+        return {f"p{j}": {"pullRequest": {"number": r.number}} for j, r in enumerate(part)}
+    monkeypatch.setattr(github, "graphql", fake_graphql)
+    out, _ = github.fetch_prs(refs, "t", chunk=20)
+    assert set(out) == set(refs) - {bad}

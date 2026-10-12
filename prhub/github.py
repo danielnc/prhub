@@ -111,14 +111,15 @@ def _alias_query(refs: list[PRRef], fields: str) -> str:
     return "query { rateLimit { cost remaining resetAt }\n" + "\n".join(parts) + "\n}"
 
 
-MAX_TRANSIENT_FAILURES = 4  # per batched read: past this it is an outage, and splitting further only adds load
+MAX_TRANSIENT_FAILURES = 4  # consecutive failures in one read: past this it is an outage, and splitting adds load
 
 
 def _batched(refs: list, build_query, read, token: str, chunk: int) -> tuple[dict, dict]:
     """Read `refs` `chunk` per GraphQL call. When GitHub fails a call transiently (a 502/504, or its "Something went
     wrong" timeout on a heavy query), split that batch in half and retry, down to single items. An item that still
     fails is left out of the result, so one heavy PR or commit cannot stop all the others from being read; its
-    previous record is kept. More than MAX_TRANSIENT_FAILURES failures in one read raise, as an outage."""
+    previous record is kept. Split halves go to the back of the queue, and any success resets the count, so more than
+    MAX_TRANSIENT_FAILURES consecutive failures mean an outage and raise, while one bad item among many is isolated."""
     out: dict = {}
     rate: dict = {}
     failures = 0
@@ -134,8 +135,9 @@ def _batched(refs: list, build_query, read, token: str, chunk: int) -> tuple[dic
             if failures > MAX_TRANSIENT_FAILURES:
                 raise
             if len(part) > 1:
-                pending[:0] = [part[:len(part) // 2], part[len(part) // 2:]]
+                pending += [part[:len(part) // 2], part[len(part) // 2:]]
             continue
+        failures = 0
         rate = d.get("rateLimit") or rate
         for j, r in enumerate(part):
             out[r] = read(d, j)

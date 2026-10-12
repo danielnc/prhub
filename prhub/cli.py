@@ -237,11 +237,17 @@ def cmd_status(a, cfg) -> int:
         print(f"daemon: PAUSED by the GitHub rate limit until {time.strftime('%H:%M', time.localtime(until))} "
               f"(pid {d.get('pid')}, alive). `prhub wait` keeps waiting and resumes by itself. Do not poll GitHub "
               f"by hand meanwhile: your calls hit the same exhausted limit.")
+    if since := store.degraded_since(d):
+        print(f"daemon: DEGRADED since {time.strftime('%H:%M', time.localtime(since))}: GitHub keeps failing its "
+              f"requests (5xx or timeouts), and prhub keeps retrying (pid {d.get('pid')}, alive). `prhub wait` keeps "
+              f"waiting on the last good state. Do not poll GitHub by hand meanwhile: it is failing for you too.")
     print(f"daemon: {'healthy' if healthy else 'NOT polling'} pid {d.get('pid')}  last poll {age}s ago  "
           f"interval {d.get('interval')}s  tracked {d.get('tracked')}  "
           f"github budget {rate.get('remaining', '?')} left (reset {rate.get('resetAt', '?')})")
     if d.get("last_error"):
         print(f"last error: {d['last_error']}")
+    if d.get("skipped"):
+        print(f"last poll skipped {d['skipped']} PRs/commits GitHub could not return; their previous state is kept")
     print(f"watches: {len(store.watches())}  PR files: {len(store.all_prs())}  "
           f"commits watched: {len(store.commit_watches())}")
     return 0 if healthy else EXIT_NO_DAEMON

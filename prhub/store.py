@@ -157,10 +157,19 @@ def rate_limited_until(d: dict | None = None) -> int | None:
     return until if until and until > time.time() - 120 and _pid_alive(d.get("pid")) else None
 
 
+def degraded_since(d: dict | None = None) -> int | None:
+    """When GitHub keeps failing the daemon's requests transiently (5xx, its query timeouts, network errors) while
+    the daemon is alive and still retrying: the epoch the trouble started, else None."""
+    d = daemon_state() if d is None else d
+    since = d.get("degraded_since")
+    retrying = time.time() - d.get("last_poll", 0) < max(300, 3 * (d.get("interval") or 60))
+    return since if since and d.get("last_error_transient") and retrying and _pid_alive(d.get("pid")) else None
+
+
 def daemon_healthy(max_age: int = 300) -> bool:
-    """Doing its job: polled GitHub recently, or is alive and deliberately waiting out a rate limit. A rate
-    limit is not an outage: agents polling by hand then would hit the same exhausted limit."""
+    """Doing its job: polled GitHub recently, or is alive and deliberately waiting out a rate limit or a run of
+    GitHub errors. Neither is an outage of prhub: agents polling by hand then would hit the same limit or errors."""
     d = daemon_state()
     if d.get("last_poll_ok") and time.time() - d["last_poll_ok"] < max_age:
         return True
-    return rate_limited_until(d) is not None
+    return rate_limited_until(d) is not None or degraded_since(d) is not None

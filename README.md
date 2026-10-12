@@ -57,6 +57,10 @@ prhub status                                      # daemon health and the GitHub
 - **Backing off.** Below 1,000 points left the daemon slows to every 3 minutes, below 300 to every 10, and when
   GitHub rate-limits it, it waits for the reset. During a rate limit `prhub status` says `PAUSED`, and waits keep
   waiting rather than failing, so agents don't fall back to polling by hand against the same exhausted limit.
+- **Riding out GitHub errors.** PRs are read 20 per request and commits 5. When GitHub times out on a request
+  (a 502/504, or its "Something went wrong" on a heavy query), the daemon splits the batch and retries, and a PR or
+  commit that still fails keeps its last state until the next poll. If GitHub keeps failing, `prhub status` says
+  `DEGRADED` and waits keep waiting on the last good state, as during a rate limit.
 
 ## Install
 

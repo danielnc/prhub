@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import time
+import traceback
 from datetime import datetime
 
 from . import commits, store
@@ -17,6 +18,7 @@ KEEP_CLOSED_WATCH = 3600    # a watched PR stays tracked this long after it clos
 KEEP_CLOSED_FILE = 7 * 86400
 KEEP_COMMIT_WATCH = 6 * 3600  # a commit stays tracked this long after the last state/wait that asked about it
 KEEP_COMMIT_FILE = 2 * 86400
+TOKEN_TTL = 600  # re-read `gh auth token` this often; a slow or failing `gh` keeps the last good token meanwhile
 
 
 def log(msg: str) -> None:
@@ -62,6 +64,19 @@ class Daemon:
         self.last_discover = 0.0
         self.state = store.daemon_state()
         self.state.update({"pid": os.getpid(), "started": int(time.time())})
+        self.token: str | None = None
+        self.token_at = 0.0
+
+    def get_token(self) -> str:
+        if self.token and time.time() - self.token_at < TOKEN_TTL:
+            return self.token
+        try:
+            self.token, self.token_at = gh_token(), time.time()
+        except GitHubError as e:
+            if not (e.transient and self.token):
+                raise
+            log(f"keeping the previous token: {e}")
+        return self.token
 
     def tracked(self) -> set[PRRef]:
         refs = set(self.open_refs)
@@ -74,7 +89,7 @@ class Daemon:
         return refs
 
     def poll(self) -> dict:
-        token = gh_token()
+        token = self.get_token()
         now = time.time()
         rate: dict = {}
         if now - self.last_discover >= self.cfg["discover_every"]:
@@ -112,9 +127,11 @@ class Daemon:
                 rec = store.read_pr(ref) or {}
                 rec["failing"] = failing
                 store.write_pr(ref, rec)
-        crate, ncommits = self.poll_commits(token, now)
+        skipped = len(refs) - len(data)
+        crate, ncommits, cskipped = self.poll_commits(token, now)
         self.prune(now)
-        return {"tracked": len(refs), "commits": ncommits, "changed": changed, "rate": crate or rate}
+        return {"tracked": len(refs), "commits": ncommits, "changed": changed, "rate": crate or rate,
+                "skipped": skipped + cskipped}
 
     def poll_commits(self, token: str, now: float) -> tuple[dict, int]:
         refs = []
@@ -124,7 +141,7 @@ class Daemon:
             except ValueError:
                 pass
         if not refs:
-            return {}, 0
+            return {}, 0, 0
         data, rate = fetch_commits(refs, token)
         for ref, node in data.items():
             prev = store.read_commit(ref) or {}
@@ -149,7 +166,7 @@ class Daemon:
             if old is None or commits.fingerprint(old) != commits.fingerprint(s):
                 store.append_event({"at": int(now), "ref": str(ref), "commit": commits.one_line(str(ref), s)})
             store.write_commit(ref, {"ref": str(ref), "fetched_at": int(now), "summary": s, "contains": cache})
-        return rate, len(refs)
+        return rate, len(refs), len(refs) - len(data)
 
     def prune(self, now: float) -> None:
         w = store.watches()
@@ -183,18 +200,30 @@ class Daemon:
                 res = self.poll()
                 interval = adaptive_interval(self.cfg["interval"], res["rate"])
                 self.state.update({"last_poll_ok": int(started), "last_error": None, "tracked": res["tracked"],
-                                   "tracked_commits": res["commits"],
-                                   "rate": res["rate"], "interval": interval, "rate_limited_until": None})
+                                   "tracked_commits": res["commits"], "skipped": res["skipped"],
+                                   "rate": res["rate"], "interval": interval, "rate_limited_until": None,
+                                   "degraded_since": None, "last_error_transient": None})
                 log(f"poll ok: {res['tracked']} tracked, {res['commits']} commits, {res['changed']} changed, "
-                    f"rate {res['rate'].get('remaining')} left, next in {interval}s")
+                    + (f"{res['skipped']} skipped (GitHub error), " if res["skipped"] else "")
+                    + f"rate {res['rate'].get('remaining')} left, next in {interval}s")
             except GitHubError as e:
                 # A GraphQL-level limit carries no reset time; the last rateLimit we read does.
                 reset = e.reset_at or (self.state.get("rate") or {}).get("resetAt")
-                wait = seconds_until(reset) if e.rate_limited else min(600, max(60, interval * 2))
+                wait = seconds_until(reset) if e.rate_limited else min(300 if e.transient else 600,
+                                                                       max(60, interval * 2))
                 interval = wait
                 self.state.update({"last_error": str(e)[:300], "last_error_at": int(started), "interval": wait,
-                                   "rate_limited_until": int(started) + wait if e.rate_limited else None})
-                log(f"poll failed ({'rate limited' if e.rate_limited else 'error'}): {e}; next in {wait}s")
+                                   "rate_limited_until": int(started) + wait if e.rate_limited else None,
+                                   "last_error_transient": e.transient,
+                                   "degraded_since": (self.state.get("degraded_since") or int(started))
+                                   if e.transient else None})
+                kind = "rate limited" if e.rate_limited else "GitHub error, retrying" if e.transient else "error"
+                log(f"poll failed ({kind}): {e}; next in {wait}s")
+            except Exception as e:  # never die on a surprise: log it and keep polling
+                interval = min(600, max(60, interval * 2))
+                self.state.update({"last_error": f"{type(e).__name__}: {e}"[:300], "last_error_at": int(started),
+                                   "interval": interval, "last_error_transient": False, "degraded_since": None})
+                log(f"poll crashed: {traceback.format_exc()}next in {interval}s")
             self.state["last_poll"] = int(started)
             store.write_json(store.home() / "daemon.json", self.state)
             if once:

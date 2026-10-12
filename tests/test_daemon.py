@@ -220,3 +220,68 @@ def test_a_nudge_ends_the_sleep_early(monkeypatch):
     t0 = time.time()
     Daemon().sleep(3600, started)
     assert time.time() - t0 < 5 and not (store.home() / "nudge").exists()
+
+
+# ---- resilience ----
+
+def test_the_token_is_reused_and_a_slow_gh_keeps_the_last_one(gh, monkeypatch):
+    calls = []
+
+    def token():
+        calls.append(1)
+        if len(calls) > 1:
+            raise GitHubError("`gh auth token` took longer than 30s", transient=True)
+        return "tok"
+    monkeypatch.setattr(daemon, "gh_token", token)
+    d = Daemon()
+    assert d.get_token() == "tok" and d.get_token() == "tok" and len(calls) == 1  # cached
+    d.token_at = 0  # expired: the refresh fails transiently, so the old token is kept
+    assert d.get_token() == "tok" and len(calls) == 2
+
+
+def test_without_any_token_a_slow_gh_is_an_error(gh, monkeypatch):
+    def slow():
+        raise GitHubError("slow", transient=True)
+    monkeypatch.setattr(daemon, "gh_token", slow)
+    with pytest.raises(GitHubError):
+        Daemon().get_token()
+
+
+def test_github_errors_make_the_daemon_degraded_not_down(gh, monkeypatch):
+    def gateway(*a):
+        raise GitHubError("HTTP 504: gateway timeout", transient=True)
+    monkeypatch.setattr(daemon, "discover_open", gateway)
+    d = Daemon()
+    d.run(once=True)
+    st = store.daemon_state()
+    since = st["degraded_since"]
+    assert since and st["interval"] == 120 and store.degraded_since() == since and store.daemon_healthy()
+    d.run(once=True)  # still failing: the start of the trouble is kept
+    assert store.daemon_state()["degraded_since"] == since
+    monkeypatch.setattr(daemon, "discover_open", gh.discover_open)
+    d.run(once=True)  # recovered
+    assert store.daemon_state()["degraded_since"] is None and store.degraded_since() is None
+
+
+def test_permanent_errors_are_not_degraded(gh, monkeypatch):
+    def denied(*a):
+        raise GitHubError("HTTP 401: Bad credentials")
+    monkeypatch.setattr(daemon, "discover_open", denied)
+    Daemon().run(once=True)
+    assert store.degraded_since() is None and not store.daemon_healthy()
+
+
+def test_a_surprise_exception_is_logged_not_fatal(gh, monkeypatch):
+    def boom(*a):
+        raise KeyError("pullRequest")
+    monkeypatch.setattr(daemon, "discover_open", boom)
+    Daemon().run(once=True)
+    assert "KeyError" in store.daemon_state()["last_error"]
+
+
+def test_skipped_items_are_counted(gh, monkeypatch):
+    other = PRRef("acme", "api", 2)
+    gh.open = [API, other]
+    monkeypatch.setattr(daemon, "fetch_prs", lambda refs, token: ({API: pr_node()}, gh.rate))  # GitHub dropped #2
+    Daemon().run(once=True)
+    assert store.daemon_state()["skipped"] == 1

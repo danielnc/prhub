@@ -43,3 +43,5 @@ PRHUB_HOME=/tmp/prhub-dev uv run python -m prhub daemon --once   # one real poll
 | `prhub/refs.py` | turning URLs, `owner/repo#N` and nicknames into PR refs |
 | `prhub/store.py` | config, state files, watches, daemon health |
 | `prhub/cli.py` | the commands, the Claude Code hook and the service installers |
+| `fuzz/`, `.clusterfuzzlite/` | Atheris fuzz targets for the parsers and the hook matcher, and their ClusterFuzzLite build |
+| `.github/workflows/publish.yml` | PyPI release, SLSA provenance and release assets (`docs/releasing.md`) |

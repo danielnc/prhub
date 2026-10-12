@@ -21,7 +21,8 @@ PRHUB_HOME=/tmp/prhub-dev uv run python -m prhub status
 
 CI (`.github/workflows/ci.yml`) runs on every pull request: pytest on Python 3.11 to 3.14, ruff, a build and
 clean-venv install of the wheel, and a gitleaks scan of the full history. Its `ci` job must pass, and `main` only
-changes through pull requests. CodeQL and CodeRabbit also review pull requests.
+changes through pull requests. Pull requests that touch `prhub/` are also fuzzed by ClusterFuzzLite (`fuzz/`,
+`.clusterfuzzlite/`): if it finds a crash, the input that caused it is in the job's artifacts. CodeQL and CodeRabbit also review pull requests.
 Releases are cut by the maintainer: see [docs/releasing.md](docs/releasing.md).
 
 ## Making a change

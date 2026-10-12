@@ -1,0 +1,38 @@
+# Fuzzing with ClusterFuzzLite: the code a pull request changes for 5 minutes, and everything weekly for 10 minutes.
+# The targets live in fuzz/, the build in .clusterfuzzlite/.
+name: ClusterFuzzLite
+
+on:
+  pull_request:
+    paths: ["prhub/**", "fuzz/**", ".clusterfuzzlite/**", ".github/workflows/cflite.yml"]
+  schedule:
+    - cron: "43 3 * * 0" # Sundays 03:43 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read # code-change mode downloads the build and corpus of earlier runs from workflow artifacts
+
+concurrency:
+  group: cflite-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: fuzz (python)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build the fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: python
+          sanitizer: address
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run the fuzzers
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: address
+          mode: ${{ github.event_name == 'pull_request' && 'code-change' || 'batch' }}
+          fuzz-seconds: ${{ github.event_name == 'pull_request' && 300 || 600 }}

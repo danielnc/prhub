@@ -11,10 +11,12 @@ def summary(pr: dict) -> dict:
     # GitHub's rollup counts check runs only. A workflow run whose jobs are not created yet (queued for a runner,
     # waiting on a concurrency group, expanding a matrix) has a check suite but no runs, so the rollup can say SUCCESS
     # from the workflows that already finished. An unfinished GitHub Actions suite on the head keeps checks PENDING.
-    # Suites with no workflow run are apps that may never start one; cron runs land on whatever the head is.
-    if rollup in (None, "SUCCESS") and any(
+    # Suites with no workflow run are apps that may never start one; cron runs land on whatever the head is. More
+    # suites than one page means an unread one may still be running, so that stays PENDING too (fails closed).
+    suites = commit.get("checkSuites") or {}
+    if rollup in (None, "SUCCESS") and ((suites.get("pageInfo") or {}).get("hasNextPage") or any(
             su and su.get("status") != "COMPLETED" and (su.get("workflowRun") or {}).get("event") not in (None, "schedule")
-            for su in ((commit.get("checkSuites") or {}).get("nodes") or [])):
+            for su in (suites.get("nodes") or []))):
         rollup = "PENDING"
     reviews = [r for r in ((pr.get("latestReviews") or {}).get("nodes") or []) if r]
     head = pr.get("headRefOid") or ""

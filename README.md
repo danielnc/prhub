@@ -122,7 +122,8 @@ It works the same whatever a repository's workflow names, default branch or rele
 - **CI** is every workflow run on the commit, including one whose jobs GitHub has not created yet, and every other
   check suite that ran something. Suites from apps that never start a run (they sit QUEUED forever) and
   cron-triggered runs (they attach to whatever the branch head is) are left out. A run cancelled because a newer run
-  of the same workflow replaced it is not a failure.
+  of the same workflow replaced it is not a failure. A commit with more than 50 check suites stays PENDING, since
+  prhub reads only the first 50 and an unread one may still be running.
 - **Deployed** reads [GitHub Deployments](https://docs.github.com/en/rest/deployments), plus commit statuses named
   like `deployed/<env>`. A successful deploy of a *later* commit counts when that commit contains yours (asked once
   per new deployment through the compare API), so nightly releases, batched deploys and a cancelled deploy followed

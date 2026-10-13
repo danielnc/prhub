@@ -16,7 +16,7 @@ PR_FIELDS = """
   author { login }
   repository { nameWithOwner }
   commits(last: 1) { nodes { commit { oid committedDate statusCheckRollup { state }
-    checkSuites(first: 50) { nodes { status workflowRun { event } } } } } }
+    checkSuites(first: 50) { pageInfo { hasNextPage } nodes { status workflowRun { event } } } } } }
   latestReviews(first: 10) { nodes { author { login } state submittedAt commit { oid } } }
   comments { totalCount }
 """

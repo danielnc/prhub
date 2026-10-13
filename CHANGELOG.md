@@ -11,7 +11,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   workflow's check suite at once but its check runs only when the jobs are created, which can take a minute (a
   runner queue, a concurrency group); its rollup ignores a suite with no runs, so a fast workflow that already
   passed made the PR or commit read SUCCESS. An unfinished workflow run now keeps checks PENDING, for PRs and
-  commits, and a commit's workflow run that ended before its jobs started counts as that workflow's result.
+  commits, and a commit's workflow run that ended before its jobs started counts as that workflow's result. A head
+  with more than 50 check suites stays PENDING rather than SUCCESS, since an unread suite may still be running.
 
 ## [0.1.2] - 2026-10-12
 

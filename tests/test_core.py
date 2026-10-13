@@ -93,6 +93,15 @@ def test_suites_that_say_nothing_about_the_head_do_not_hold_green():
     assert summary(pr(checks="FAILURE", suites=[("QUEUED", "pull_request")]))["checks"] == "FAILURE"
 
 
+
+def test_more_suites_than_one_page_keep_checks_pending():
+    # past the first page an unread workflow may still be running, so green and done fail closed
+    many = pr(suites=[("COMPLETED", "pull_request")])
+    many["commits"]["nodes"][0]["commit"]["checkSuites"]["pageInfo"] = {"hasNextPage": True}
+    s = summary(many)
+    assert s["checks"] == "PENDING" and evaluate("done", s, None, MERGE_STATES) == (False, False)
+
+
 def test_done_is_impossible_once_closed():
     assert evaluate("done", summary(pr(state="MERGED")), None, MERGE_STATES) == (False, True)
 

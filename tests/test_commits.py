@@ -49,10 +49,19 @@ def test_ignores_apps_that_never_ran_and_cron_runs():
 
 def test_a_workflow_whose_jobs_do_not_exist_yet_keeps_the_commit_pending():
     # acme/api, as seen live: both workflows of the push got a check suite in the same second, but CI's jobs (its
-    # check runs) were created 45 s later. Secret scan finished in between, and green must not be read from it alone.
+    # check runs) were created later. Secret scan finished in between, and green must not be read from it alone.
     s = summarize(node([suite("Secret scan"), suite("CI", status="QUEUED", conclusion=None, runs=0)]))
     assert rollup(s) == ("PENDING", []) and evaluate("green", s, None) == (False, None)
     assert "CI=QUEUED" in commits.one_line("acme/api@aaaaaaa", s)
+
+
+
+def test_more_suites_than_one_page_keep_the_commit_pending():
+    n = node([suite("CI")])
+    n["object"]["checkSuites"]["pageInfo"] = {"hasNextPage": True}
+    s = summarize(n)
+    assert rollup(s)[0] == "PENDING" and evaluate("green", s, None) == (False, None)
+    assert rollup(summarize(node([suite("CI")])))[0] == "SUCCESS"
 
 
 def test_a_workflow_run_that_ended_before_its_jobs_started_still_counts():

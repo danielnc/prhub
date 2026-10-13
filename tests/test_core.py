@@ -11,15 +11,20 @@ MERGE_STATES = ["CLEAN", "HAS_HOOKS"]
 HEAD_COMMITTED = "2026-10-11T08:00:00Z"
 
 
-def pr(state="OPEN", draft=False, checks="SUCCESS", review="APPROVED", merge="CLEAN", head="abc123", reviews=None):
+def pr(state="OPEN", draft=False, checks="SUCCESS", review="APPROVED", merge="CLEAN", head="abc123", reviews=None,
+       suites=()):
     """`reviews`: (author, state, submittedAt[, commit oid]); the oid defaults to `head`. By default an APPROVED
-    review decision comes with one approval of the head, submitted after the head commit."""
+    review decision comes with one approval of the head, submitted after the head commit. `suites`: the head's check
+    suites as (status, workflow run event or None for an app that is not GitHub Actions)."""
     if reviews is None:
         reviews = [("approver", "APPROVED", "2026-10-11T09:00:00Z")] if review == "APPROVED" else []
     return {"state": state, "isDraft": draft, "reviewDecision": review, "mergeStateStatus": merge,
             "headRefOid": head, "mergeable": "MERGEABLE", "baseRefName": "main", "title": "t", "url": "u",
             "commits": {"nodes": [{"commit": {"oid": head, "committedDate": HEAD_COMMITTED,
-                                              "statusCheckRollup": {"state": checks} if checks else None}}]},
+                                              "statusCheckRollup": {"state": checks} if checks else None,
+                                              "checkSuites": {"nodes": [
+                                                  {"status": st, "workflowRun": {"event": ev} if ev else None}
+                                                  for st, ev in suites]}}}]},
             "latestReviews": {"nodes": [{"author": {"login": r[0]}, "state": r[1], "submittedAt": r[2],
                                          "commit": {"oid": r[3] if len(r) > 3 else head}} for r in reviews]}}
 
@@ -69,6 +74,32 @@ def test_done_rejects_an_approval_relabelled_onto_the_head():
     # a force-push with an unchanged patch moves an older review onto the new head: it predates the head commit
     relabelled = summary(pr(reviews=[("bot", "APPROVED", "2026-10-11T07:00:00Z")]))
     assert not relabelled["approved_head"] and not evaluate("done", relabelled, None, MERGE_STATES)[0]
+
+
+def test_green_waits_for_a_workflow_whose_jobs_do_not_exist_yet():
+    # GitHub's rollup counts only check runs. CI's suite exists but its jobs are not created yet, while the other
+    # workflow on the head already passed: the rollup says SUCCESS, and neither green nor done may be met.
+    early = summary(pr(suites=[("COMPLETED", "pull_request"), ("QUEUED", "pull_request")]))
+    assert early["checks"] == "PENDING"
+    for cond in ("green", "done", "checks"):
+        assert evaluate(cond, early, None, MERGE_STATES) == (False, False)
+    assert summary(pr(checks=None, suites=[("IN_PROGRESS", "pull_request")]))["checks"] == "PENDING"
+
+
+def test_suites_that_say_nothing_about_the_head_do_not_hold_green():
+    # an app that never starts a run (no workflow run) and a cron run that landed on the head
+    s = summary(pr(suites=[("COMPLETED", "pull_request"), ("QUEUED", None), ("IN_PROGRESS", "schedule")]))
+    assert s["checks"] == "SUCCESS" and evaluate("green", s, None, MERGE_STATES) == (True, False)
+    assert summary(pr(checks="FAILURE", suites=[("QUEUED", "pull_request")]))["checks"] == "FAILURE"
+
+
+
+def test_more_suites_than_one_page_keep_checks_pending():
+    # past the first page an unread workflow may still be running, so green and done fail closed
+    many = pr(suites=[("COMPLETED", "pull_request")])
+    many["commits"]["nodes"][0]["commit"]["checkSuites"]["pageInfo"] = {"hasNextPage": True}
+    s = summary(many)
+    assert s["checks"] == "PENDING" and evaluate("done", s, None, MERGE_STATES) == (False, False)
 
 
 def test_done_is_impossible_once_closed():

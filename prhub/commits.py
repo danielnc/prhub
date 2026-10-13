@@ -1,9 +1,10 @@
 """Watch one commit's CI and deployments, in any repo: `owner/repo@sha`.
 
 Generic on purpose. Workflow names, default branches (main, develop…) and deploy styles differ per repo, so:
-- CI is every check suite that actually ran something on the commit, minus cron runs (a scheduled workflow attaches
-  to whatever the branch head is, so it says nothing about this commit) and minus apps that never start a run
-  (cursor, classroom, cloudflare… leave a suite QUEUED forever with zero runs).
+- CI is every workflow run on the commit, even one whose jobs do not exist yet, plus every other app's check suite
+  that actually ran something, minus cron runs (a scheduled workflow attaches to whatever the branch head is, so it
+  says nothing about this commit) and minus apps that never start a run (some leave a suite QUEUED forever
+  with zero runs). Past the first 50 suites the commit stays PENDING, since an unread suite may still be running.
 - "deployed to <env>" comes from GitHub Deployments, which both deploy-on-merge and nightly-release repos record,
   plus commit statuses named like `deployed/<env>`. A deploy of a LATER commit counts when that commit contains this
   one (the daemon asks GitHub's compare API once per new deployment), because a cancelled or batched deploy means
@@ -69,7 +70,7 @@ def resolve(text: str, resolver: RefResolver | None = None, cwd: str | None = No
 COMMIT_FIELDS = """
   object(expression: %s) { ... on Commit { oid committedDate
     status { contexts { context state targetUrl } }
-    checkSuites(first: 50) { nodes { app { slug } status conclusion checkRuns(first: 0) { totalCount }
+    checkSuites(first: 50) { pageInfo { hasNextPage } nodes { app { slug } status conclusion checkRuns(first: 0) { totalCount }
       workflowRun { event url workflow { name } } } } } }
   deployments(last: 30) { nodes { commitOid environment createdAt latestStatus { state } } }
 """
@@ -89,9 +90,12 @@ def summarize(repo_node: dict) -> dict | None:
     oid = obj["oid"]
     runs = []
     for s in ((obj.get("checkSuites") or {}).get("nodes") or []):
-        if not s or not ((s.get("checkRuns") or {}).get("totalCount") or 0):
-            continue  # an app that never started a run on this commit
+        if not s:
+            continue
         wr = s.get("workflowRun") or {}
+        if not wr and not ((s.get("checkRuns") or {}).get("totalCount") or 0):
+            continue  # an app that never started a run on this commit
+        # A workflow run counts even with no check runs: its jobs may not be created yet, and green must wait for them
         if wr.get("event") == "schedule":
             continue  # cron runs land on the branch head; they are not about this commit
         runs.append({"name": ((wr.get("workflow") or {}).get("name")) or (s.get("app") or {}).get("slug") or "?",
@@ -109,7 +113,9 @@ def summarize(repo_node: dict) -> dict | None:
             e["this"] = st
         if st == "SUCCESS":
             e["last_success"] = {"sha": d.get("commitOid"), "at": d.get("createdAt")}
-    return {"oid": oid, "committed": obj.get("committedDate"), "runs": runs, "statuses": statuses, "envs": envs}
+    truncated = bool(((obj.get("checkSuites") or {}).get("pageInfo") or {}).get("hasNextPage"))
+    return {"oid": oid, "committed": obj.get("committedDate"), "runs": runs, "statuses": statuses, "envs": envs,
+            "truncated": truncated}
 
 
 def needs_containment(s: dict) -> list[tuple[str, str]]:
@@ -137,7 +143,8 @@ def rollup(s: dict, workflow: str | None = None) -> tuple[str | None, list[str]]
     failed = ([r["name"] for r in runs if r["status"] == "COMPLETED" and (r["conclusion"] or "") not in OK
                and not (r["conclusion"] == "CANCELLED" and r["name"] in passed)]
               + [x["name"] for x in statuses if x["state"] in ("FAILURE", "ERROR")])
-    pending = (any(r["status"] != "COMPLETED" for r in runs)
+    # more suites than one page: an unread one may still be running, so never call that SUCCESS (fails closed)
+    pending = (bool(s.get("truncated")) or any(r["status"] != "COMPLETED" for r in runs)
                or any(x["state"] in ("PENDING", "EXPECTED") for x in statuses))
     return ("PENDING" if pending else "FAILURE" if failed else "SUCCESS"), failed
 

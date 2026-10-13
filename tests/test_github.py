@@ -29,6 +29,11 @@ def urlopen(monkeypatch):
 
 # ---- token ----
 
+def test_the_pr_query_reads_the_head_check_suites():
+    # the rollup alone misses a workflow whose jobs do not exist yet; summary() needs each suite's status and event
+    assert "checkSuites(first: 50) { pageInfo { hasNextPage } nodes { status workflowRun { event } } }" in github.PR_FIELDS
+
+
 def test_token_comes_from_gh(monkeypatch):
     monkeypatch.setattr(github.subprocess, "run",
                         lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="tok123\n", stderr=""))

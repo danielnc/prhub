@@ -15,7 +15,8 @@ PR_FIELDS = """
   headRefName baseRefName headRefOid updatedAt mergedAt closedAt
   author { login }
   repository { nameWithOwner }
-  commits(last: 1) { nodes { commit { oid committedDate statusCheckRollup { state } } } }
+  commits(last: 1) { nodes { commit { oid committedDate statusCheckRollup { state }
+    checkSuites(first: 50) { nodes { status workflowRun { event } } } } } }
   latestReviews(first: 10) { nodes { author { login } state submittedAt commit { oid } } }
   comments { totalCount }
 """

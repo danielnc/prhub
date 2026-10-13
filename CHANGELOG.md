@@ -5,6 +5,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `green` and `done` are no longer met while a workflow on the head is still waiting for its jobs. GitHub creates a
+  workflow's check suite at once but its check runs only when the jobs are created, which can take a minute (a
+  runner queue, a concurrency group); its rollup ignores a suite with no runs, so a fast workflow that already
+  passed made the PR or commit read SUCCESS. An unfinished workflow run now keeps checks PENDING, for PRs and
+  commits, and a commit's workflow run that ended before its jobs started counts as that workflow's result.
+
 ## [0.1.2] - 2026-10-12
 
 ### Fixed

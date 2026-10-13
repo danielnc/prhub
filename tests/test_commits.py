@@ -46,6 +46,20 @@ def test_ignores_apps_that_never_ran_and_cron_runs():
     assert [r["name"] for r in s["runs"]] == ["CI"] and rollup(s) == ("SUCCESS", [])
 
 
+def test_a_workflow_whose_jobs_do_not_exist_yet_keeps_the_commit_pending():
+    # acme/api, as seen live: both workflows of the push got a check suite in the same second, but CI's jobs (its
+    # check runs) were created 45 s later. Secret scan finished in between, and green must not be read from it alone.
+    s = summarize(node([suite("Secret scan"), suite("CI", status="QUEUED", conclusion=None, runs=0)]))
+    assert rollup(s) == ("PENDING", []) and evaluate("green", s, None) == (False, None)
+    assert "CI=QUEUED" in commits.one_line("acme/api@aaaaaaa", s)
+
+
+def test_a_workflow_run_that_ended_before_its_jobs_started_still_counts():
+    # e.g. cancelled while waiting on a concurrency group: this commit's CI never ran
+    s = summarize(node([suite("Secret scan"), suite("CI", conclusion="CANCELLED", runs=0)]))
+    assert rollup(s) == ("FAILURE", ["CI"])
+
+
 def test_pending_failure_and_nothing_yet():
     assert rollup(summarize(node([suite("CI", status="IN_PROGRESS", conclusion=None)])))[0] == "PENDING"
     assert rollup(summarize(node([suite("CI", conclusion="FAILURE")]))) == ("FAILURE", ["CI"])

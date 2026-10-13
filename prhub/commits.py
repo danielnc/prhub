@@ -1,9 +1,10 @@
 """Watch one commit's CI and deployments, in any repo: `owner/repo@sha`.
 
 Generic on purpose. Workflow names, default branches (main, develop…) and deploy styles differ per repo, so:
-- CI is every check suite that actually ran something on the commit, minus cron runs (a scheduled workflow attaches
-  to whatever the branch head is, so it says nothing about this commit) and minus apps that never start a run
-  (cursor, classroom, cloudflare… leave a suite QUEUED forever with zero runs).
+- CI is every workflow run on the commit, even one whose jobs do not exist yet, plus every other app's check suite
+  that actually ran something, minus cron runs (a scheduled workflow attaches to whatever the branch head is, so it
+  says nothing about this commit) and minus apps that never start a run (cursor, classroom, cloudflare… leave a
+  suite QUEUED forever with zero runs).
 - "deployed to <env>" comes from GitHub Deployments, which both deploy-on-merge and nightly-release repos record,
   plus commit statuses named like `deployed/<env>`. A deploy of a LATER commit counts when that commit contains this
   one (the daemon asks GitHub's compare API once per new deployment), because a cancelled or batched deploy means
@@ -89,9 +90,12 @@ def summarize(repo_node: dict) -> dict | None:
     oid = obj["oid"]
     runs = []
     for s in ((obj.get("checkSuites") or {}).get("nodes") or []):
-        if not s or not ((s.get("checkRuns") or {}).get("totalCount") or 0):
-            continue  # an app that never started a run on this commit
+        if not s:
+            continue
         wr = s.get("workflowRun") or {}
+        if not wr and not ((s.get("checkRuns") or {}).get("totalCount") or 0):
+            continue  # an app that never started a run on this commit
+        # A workflow run counts even with no check runs: its jobs may not be created yet, and green must wait for them
         if wr.get("event") == "schedule":
             continue  # cron runs land on the branch head; they are not about this commit
         runs.append({"name": ((wr.get("workflow") or {}).get("name")) or (s.get("app") or {}).get("slug") or "?",

@@ -123,8 +123,9 @@ It works the same whatever a repository's workflow names, default branch or rele
   check suite that ran something. Suites from apps that never start a run (they sit QUEUED forever) and
   cron-triggered runs (they attach to whatever the branch head is) are left out. A run cancelled because a newer run
   of the same workflow replaced it is not a failure. A run cancelled before any of its jobs started (its
-  concurrency group replaced it while it waited) is not a failure either: it shows as `NOT STARTED`, and `green` can
-  never be met for that commit, because its CI never ran there; wait on the newer commit or use `--until deployed`.
+  concurrency group replaced it while it waited) is not a failure either: it shows as `NOT STARTED`. When no other run
+  of that workflow started on the commit, `green` can never be met for it, because that workflow never ran there;
+  wait on the newer commit or use `--until deployed`.
   A dispatched run (`workflow_dispatch`, `repository_dispatch`) cancelled before it started is left out, like cron.
   Other cancelled runs count as failures and are listed as `name (cancelled)`. A commit with more than 50 check suites stays PENDING, since
   prhub reads only the first 50 and an unread one may still be running.

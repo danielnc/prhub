@@ -41,7 +41,8 @@ def test_pr_texts_are_not_commits():
 # ---- what counts as CI on a commit ----
 
 def test_ignores_apps_that_never_ran_and_cron_runs():
-    s = summarize(node([suite("CI"), suite("cursor", status="QUEUED", conclusion=None, runs=0, event=None, app="cursor"),
+    s = summarize(node([suite("CI"), None,
+                        suite("cursor", status="QUEUED", conclusion=None, runs=0, event=None, app="cursor"),
                         suite("Nightly", status="IN_PROGRESS", conclusion=None, event="schedule")]))
     assert [r["name"] for r in s["runs"]] == ["CI"] and rollup(s) == ("SUCCESS", [])
 

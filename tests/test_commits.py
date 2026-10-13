@@ -64,10 +64,37 @@ def test_more_suites_than_one_page_keep_the_commit_pending():
     assert rollup(summarize(node([suite("CI")])))[0] == "SUCCESS"
 
 
-def test_a_workflow_run_that_ended_before_its_jobs_started_still_counts():
-    # e.g. cancelled while waiting on a concurrency group: this commit's CI never ran
+def test_a_run_cancelled_before_it_started_is_not_a_failure_but_green_can_never_be_met():
+    # replaced in its concurrency group by a newer run while it waited: this commit's CI never ran, so it is not red,
+    # and green is impossible rather than met from the workflows that did run
     s = summarize(node([suite("Secret scan"), suite("CI", conclusion="CANCELLED", runs=0)]))
-    assert rollup(s) == ("FAILURE", ["CI"])
+    assert rollup(s) == ("SUCCESS", [])
+    met, why = evaluate("green", s, None)
+    assert not met and "never ran on this commit" in why and "CI" in why
+    assert evaluate("checks", s, None) == (True, None)
+    assert "CI=NOT STARTED" in commits.one_line("acme/api@aaaaaaa", s) and "failing" not in commits.one_line(
+        "acme/api@aaaaaaa", s)
+    only = summarize(node([suite("CI", conclusion="CANCELLED", runs=0)]))
+    assert rollup(only) == (None, []) and evaluate("checks", only, None)[1] and evaluate("green", only, None)[1]
+    while_pending = summarize(node([suite("Build", status="IN_PROGRESS", conclusion=None),
+                                    suite("CI", conclusion="CANCELLED", runs=0)]))
+    assert evaluate("green", while_pending, None) == (False, None)
+
+
+def test_a_run_cancelled_before_it_started_does_not_count_when_the_same_workflow_ran():
+    s = summarize(node([suite("CI", conclusion="CANCELLED", runs=0), suite("CI")]))
+    assert rollup(s) == ("SUCCESS", []) and evaluate("green", s, None) == (True, None)
+
+
+def test_a_cancelled_dispatched_run_that_never_started_says_nothing_about_the_commit():
+    # the merge commit of a deploy-on-merge repo: a post-merge job dispatched on the branch head waited in its
+    # concurrency group and was replaced by the next merge's run; every check run on the commit passed
+    s = summarize(node([suite("Wiki trigger"), suite("Publish image"), suite("Deploy", event="workflow_dispatch"),
+                        suite("Wiki ingest", conclusion="CANCELLED", runs=0, event="workflow_dispatch")]))
+    assert rollup(s) == ("SUCCESS", []) and evaluate("green", s, None) == (True, None)
+    assert "Wiki ingest" not in commits.one_line("acme/api@aaaaaaa", s)
+    started = summarize(node([suite("Deploy", conclusion="CANCELLED", event="workflow_dispatch")]))
+    assert rollup(started) == ("FAILURE", ["Deploy (cancelled)"])
 
 
 def test_pending_failure_and_nothing_yet():
@@ -81,7 +108,7 @@ def test_cancelled_run_counts_only_without_a_passing_sibling():
     replaced = summarize(node([suite("CI", conclusion="CANCELLED"), suite("CI")]))
     assert rollup(replaced) == ("SUCCESS", [])
     alone = summarize(node([suite("CI", conclusion="CANCELLED")]))
-    assert rollup(alone) == ("FAILURE", ["CI"])
+    assert rollup(alone) == ("FAILURE", ["CI (cancelled)"])
 
 
 def test_workflow_filter_narrows_checks():

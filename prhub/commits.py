@@ -25,6 +25,9 @@ NICK_RE = re.compile(r"^([\w .-]+?)\s*@\s*([0-9a-fA-F]{7,40})$")
 HERE_RE = re.compile(r"^@([0-9a-fA-F]{7,40})$")
 
 OK = {"SUCCESS", "SKIPPED", "NEUTRAL"}
+# Dispatched runs (a deploy button, a post-merge job) run on whatever the branch head is when they are started, like
+# cron runs, so one cancelled before it started says nothing about this commit.
+DISPATCH = {"workflow_dispatch", "repository_dispatch"}
 CONDITIONS = ("checks", "green", "deployed", "change")
 
 
@@ -98,9 +101,15 @@ def summarize(repo_node: dict) -> dict | None:
         # A workflow run counts even with no check runs: its jobs may not be created yet, and green must wait for them
         if wr.get("event") == "schedule":
             continue  # cron runs land on the branch head; they are not about this commit
+        # Cancelled before any job was created: a concurrency group replaced it with a newer run while it waited, or
+        # someone cancelled it in the queue. Nothing ran, so it is neither a pass nor a failure of this commit.
+        not_started = (bool(wr) and s.get("status") == "COMPLETED" and s.get("conclusion") == "CANCELLED"
+                       and not ((s.get("checkRuns") or {}).get("totalCount") or 0))
+        if not_started and wr.get("event") in DISPATCH:
+            continue
         runs.append({"name": ((wr.get("workflow") or {}).get("name")) or (s.get("app") or {}).get("slug") or "?",
                      "event": wr.get("event"), "status": s.get("status"), "conclusion": s.get("conclusion"),
-                     "url": wr.get("url")})
+                     "url": wr.get("url"), "not_started": not_started})
     statuses = [{"name": c.get("context"), "state": c.get("state"), "url": c.get("targetUrl")}
                 for c in (((obj.get("status") or {}).get("contexts")) or []) if c]
     envs: dict[str, dict] = {}
@@ -133,14 +142,15 @@ def rollup(s: dict, workflow: str | None = None) -> tuple[str | None, list[str]]
     """(PENDING | SUCCESS | FAILURE | None when nothing ran yet, names of failed runs/statuses). `workflow` keeps only
     runs and statuses whose name contains it (case-insensitive)."""
     w = (workflow or "").lower()
-    runs = [r for r in s["runs"] if w in (r["name"] or "").lower()]
+    runs = [r for r in s["runs"] if w in (r["name"] or "").lower() and not r.get("not_started")]
     statuses = [x for x in s["statuses"] if w in (x["name"] or "").lower()]
     if not runs and not statuses:
         return None, []
     # A run CANCELLED because a newer run of the same workflow replaced it (re-run, concurrency group) is not a
     # failure when a sibling of that name passed; with no passing sibling it still is.
     passed = {r["name"] for r in runs if r["status"] == "COMPLETED" and (r["conclusion"] or "") in OK}
-    failed = ([r["name"] for r in runs if r["status"] == "COMPLETED" and (r["conclusion"] or "") not in OK
+    failed = ([r["name"] + (" (cancelled)" if r["conclusion"] == "CANCELLED" else "") for r in runs
+               if r["status"] == "COMPLETED" and (r["conclusion"] or "") not in OK
                and not (r["conclusion"] == "CANCELLED" and r["name"] in passed)]
               + [x["name"] for x in statuses if x["state"] in ("FAILURE", "ERROR")])
     # more suites than one page: an unread one may still be running, so never call that SUCCESS (fails closed)
@@ -176,16 +186,30 @@ def fingerprint(s: dict) -> tuple:
                          for k, v in (s.get("envs") or {}).items())))
 
 
+def never_ran(s: dict, workflow: str | None = None) -> list[str]:
+    """Workflows of this commit that were cancelled before any job started and never ran here at all (no run of the
+    same name started). Green can never be met for them: this commit's CI did not happen."""
+    w = (workflow or "").lower()
+    runs = [r for r in s["runs"] if w in (r["name"] or "").lower()]
+    started = {r["name"] for r in runs if not r.get("not_started")}
+    return sorted({r["name"] for r in runs if r.get("not_started") and r["name"] not in started})
+
+
 def evaluate(cond: str, s: dict, baseline: dict | None, env: str = "production",
              workflow: str | None = None) -> tuple[bool, str | None]:
     """(met, reason it can no longer be met or None)."""
     if cond == "change":
         return baseline is not None and fingerprint(s) != fingerprint(baseline), None
     state, failed = rollup(s, workflow)
+    unrun = never_ran(s, workflow)
+    unrun_reason = (f"never ran on this commit (cancelled before it started, usually replaced by a newer run): "
+                    f"{', '.join(unrun)}; wait on the newer commit, or use --until deployed") if unrun else None
     if cond == "checks":
-        return state in ("SUCCESS", "FAILURE"), None
+        return state in ("SUCCESS", "FAILURE"), (unrun_reason if state is None else None)
     if cond == "green":
-        return state == "SUCCESS", (f"failed: {', '.join(failed)}" if state == "FAILURE" else None)
+        if state == "FAILURE":
+            return False, f"failed: {', '.join(failed)}"
+        return False if unrun else state == "SUCCESS", (unrun_reason if state != "PENDING" else None)
     if cond == "deployed":
         live, failure = deploy_state(s, env)
         return live, (None if live else failure)
@@ -197,10 +221,14 @@ def one_line(ref: str, s: dict, workflow: str | None = None) -> str:
     bits = [f"{ref} ({s['oid'][:10]})", f"checks={state or 'none yet'}"]
     shown = [r for r in s["runs"] if (workflow or "").lower() in (r["name"] or "").lower()]
     if shown:
-        bits.append("runs: " + ", ".join(f"{r['name']}={r['conclusion'] or r['status']}" for r in shown[:8])
+        bits.append("runs: " + ", ".join(f"{r['name']}={'NOT STARTED' if r.get('not_started') else r['conclusion'] or r['status']}"
+                                         for r in shown[:8])
                     + (f" (+{len(shown) - 8})" if len(shown) > 8 else ""))
     if failed:
         bits.append("failing: " + ", ".join(failed[:6]))
+    unrun = never_ran(s, workflow)
+    if unrun:
+        bits.append("never ran here: " + ", ".join(unrun[:6]))
     deps = []
     for env, e in sorted((s.get("envs") or {}).items()):
         if e.get("this") == "SUCCESS" or e.get("live"):

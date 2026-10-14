@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-14
+
 ### Fixed
 
 - `deployed` matches an environment by its usual long and short forms when the repository does not use the exact name:

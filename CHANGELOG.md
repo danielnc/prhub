@@ -5,6 +5,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `deployed` matches an environment by its usual long and short forms when the repository does not use the exact name:
+  `production` also matches `prod`/`prd`, `staging` matches `stage`/`stg`, `development` matches `dev`. A repository
+  whose environment is `prod` made `--until deployed` (default `--env production`) wait until its timeout. When the
+  repository deploys but never to the requested environment, `wait` now says which environments it saw.
+
 ## [0.1.4] - 2026-10-14
 
 ### Fixed

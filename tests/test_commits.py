@@ -208,6 +208,29 @@ def test_deploy_status_context_counts_and_env_matters():
     assert deploy_state(s, "any")[0] is True
 
 
+
+def test_environment_names_match_their_usual_short_and_long_forms():
+    # repositories name the same environment differently: production in one, prod in the next
+    s = summarize(node(deployments=[(OID, "prod", "2026-10-10T11:00:00Z", "SUCCESS"),
+                                    (OID, "stg", "2026-10-10T11:00:00Z", "SUCCESS")]))
+    assert deploy_state(s, "production") == (True, None) and deploy_state(s, "prd")[0] is True
+    assert deploy_state(s, "staging")[0] is True and deploy_state(s, "development")[0] is False
+    both = summarize(node(deployments=[(OID, "production", "2026-10-10T11:00:00Z", "SUCCESS"),
+                                       (OID, "prod", "2026-10-10T11:00:00Z", "FAILURE")]))
+    assert commits.env_names(both, "prod") == ["prod"] and commits.env_names(both, "production") == ["production"]
+    assert commits.env_names(s, "qa") == [] and commits.env_names(s, "any") == ["prod", "stg"]
+    assert deploy_state(summarize(node(statuses=[("deployed/prod", "SUCCESS")])), "production") == (True, None)
+
+
+def test_an_environment_the_repository_never_deploys_to_is_named():
+    s = summarize(node(deployments=[(OID, "prod", "2026-10-10T11:00:00Z", "SUCCESS"),
+                                    (OID, "staging", "2026-10-10T11:00:00Z", "SUCCESS")]))
+    hint = commits.env_hint(s, "qa")
+    assert "'qa'" in hint and "prod, staging" in hint
+    assert commits.env_hint(s, "production") is None and commits.env_hint(s, "any") is None
+    assert commits.env_hint(summarize(node()), "qa") is None  # no deployments at all: nothing to suggest
+
+
 def test_change_compares_against_the_baseline():
     a = summarize(node([suite("CI", status="IN_PROGRESS", conclusion=None)]))
     b = summarize(node([suite("CI")]))

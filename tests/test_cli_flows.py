@@ -160,6 +160,18 @@ def test_wait_commit_green_and_deployed(clock, capsys):
     assert "production=live" in capsys.readouterr().out
 
 
+
+def test_wait_deployed_matches_a_short_environment_name_and_names_a_wrong_one(clock, capsys):
+    healthy_daemon()
+    put_commit(at=clock.now, node=commit_node(deployments=[("a" * 40, "prod", "2026-10-11T09:00:00Z", "SUCCESS")]))
+    assert cli.main(["wait", "acme/api@abcdef1", "--until", "deployed"]) == cli.EXIT_MET
+    capsys.readouterr()
+    assert cli.main(["wait", "acme/api@abcdef1", "--until", "deployed", "--env", "qa",
+                     "--timeout", "4000"]) == cli.EXIT_TIMEOUT
+    out, err = capsys.readouterr()
+    assert "environments seen: prod" in err and "environments seen: prod" in out
+
+
 def test_wait_commit_fails_fast_on_a_red_run(clock, capsys):
     healthy_daemon()
     put_commit(at=clock.now, node=commit_node(runs=[("CI", "COMPLETED", "FAILURE")]))

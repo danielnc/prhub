@@ -89,6 +89,7 @@ def cmd_wait_commit(a, cfg) -> int:
     start = time.time()
     baseline = None
     last_line = None
+    hint = None
     next_touch = start + 1800
     while time.time() < start + a.timeout:
         rec = store.read_commit(ref)
@@ -98,6 +99,10 @@ def cmd_wait_commit(a, cfg) -> int:
                 return 2
             s = rec["summary"]
             baseline = baseline or s
+            if "deployed" in conds and hint is None:
+                hint = commits.env_hint(s, a.env) or ""
+                if hint:
+                    print(f"note: {hint}", file=sys.stderr)
             line = commits.one_line(rec["ref"], s, a.workflow)
             for c in conds:
                 met, dead = commits.evaluate(c, s, baseline, a.env, a.workflow)
@@ -115,7 +120,7 @@ def cmd_wait_commit(a, cfg) -> int:
             print("prhub daemon stopped polling while waiting", file=sys.stderr)
             return EXIT_NO_DAEMON
         time.sleep(a.poll)
-    print("timeout: " + (last_line or f"{ref}: no fresh data"))
+    print("timeout: " + (last_line or f"{ref}: no fresh data") + (f"  ({hint})" if hint else ""))
     return EXIT_TIMEOUT
 
 
@@ -394,7 +399,8 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("pr", help=target)
     w.add_argument("--until", required=True, help="PR: " + ", ".join(CONDITIONS) + "; commit: "
                    + ", ".join(commits.CONDITIONS) + " (comma = any)")
-    w.add_argument("--env", default="production", help="commits, deployed: environment name, or 'any'")
+    w.add_argument("--env", default="production", help="commits, deployed: environment name as the repo names it, or 'any' (production also matches prod/prd, "
+                        "staging stage/stg, development dev)")
     w.add_argument("--workflow", help="commits, checks/green: only runs/statuses whose name contains this")
     w.add_argument("--timeout", type=int, default=3600, help="seconds (default 3600)")
     w.add_argument("--poll", type=float, default=3.0, help="seconds between local reads (default 3)")

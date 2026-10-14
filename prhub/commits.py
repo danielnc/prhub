@@ -29,6 +29,9 @@ OK = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 # cron runs, so one cancelled before it started says nothing about this commit.
 DISPATCH = {"workflow_dispatch", "repository_dispatch"}
 RUN_URL = re.compile(r"/actions/runs/(\d+)")
+# Repositories name the same environment differently (production, prod, prd…). A name the repository does not use
+# stands for its usual long and short forms.
+ENV_ALIASES = ({"production", "prod", "prd"}, {"staging", "stage", "stg"}, {"development", "dev"})
 CONDITIONS = ("checks", "green", "deployed", "change")
 
 
@@ -217,9 +220,31 @@ def rollup(s: dict, workflow: str | None = None) -> tuple[str | None, list[str]]
     return ("PENDING" if pending else "FAILURE" if failed else "SUCCESS"), failed
 
 
+def env_names(s: dict, env: str) -> list[str]:
+    """This commit's environments that `env` means: the exact name when the repository uses it, else its aliases
+    (`production` matches `prod`). "any" means every environment."""
+    names = list(s.get("envs") or {})
+    if env == "any":
+        return names
+    exact = [n for n in names if n.lower() == env.lower()]
+    if exact:
+        return exact
+    forms = next((g for g in ENV_ALIASES if env.lower() in g), {env.lower()})
+    return [n for n in names if n.lower() in forms]
+
+
+def env_hint(s: dict, env: str) -> str | None:
+    """Why `deployed` for `env` may never be met: the repository deploys, but never to an environment of that name."""
+    names = sorted(s.get("envs") or {})
+    if env == "any" or not names or env_names(s, env):
+        return None
+    return f"no deployments to '{env}' recorded for this repository; environments seen: {', '.join(names)} (use --env)"
+
+
 def deploy_state(s: dict, env: str) -> tuple[bool, str | None]:
     """(live in `env`, failure text or None). `env` "any" accepts every environment."""
-    names = [n for n in (s.get("envs") or {}) if env == "any" or n.lower() == env.lower()]
+    names = env_names(s, env)
+    forms = next((g for g in ENV_ALIASES if env.lower() in g), {env.lower()})
     failure = None
     for n in names:
         e = s["envs"][n]
@@ -229,7 +254,7 @@ def deploy_state(s: dict, env: str) -> tuple[bool, str | None]:
             failure = f"the {n} deployment of this commit {e['this']}"
     for x in s.get("statuses") or []:  # e.g. a `deployed/production` commit status
         name = (x["name"] or "").lower()
-        if "deploy" in name and (env == "any" or env.lower() in name):
+        if "deploy" in name and (env == "any" or any(f in name for f in forms)):
             if x["state"] == "SUCCESS":
                 return True, None
             if x["state"] in ("FAILURE", "ERROR"):

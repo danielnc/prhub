@@ -114,7 +114,7 @@ prhub state @3a1e48e                                           # a commit of the
 |---|---|
 | `checks` | every run on the commit finished, whatever the result |
 | `green` | every run passed (exits `3` as soon as one fails) |
-| `deployed` | the commit is live in `--env` (default `production`, or `any`) |
+| `deployed` | the commit is live in `--env` (default `production`, or `any`). Use the repository's environment name; `production` also matches `prod`/`prd`, `staging` matches `stage`/`stg`, `development` matches `dev`. If the repository never deploys to that name, `wait` says which environments it saw |
 | `change` | anything about the commit's runs or deploys changed |
 
 It works the same whatever a repository's workflow names, default branch or release style:

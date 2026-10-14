@@ -18,7 +18,7 @@ One daemon (prhub) reads all PRs and commits once a minute; these commands read 
 | Need | Command |
 |------|---------|
 | Block until a PR reaches a state | `prhub wait <pr> --until done|green|checks|merged|closed|review|change --timeout 3600` |
-| Block until a commit's CI or deploy finishes | `prhub wait <owner/repo@sha> --until checks|green|deployed [--env production] [--workflow deploy]` |
+| Block until a commit's CI or deploy finishes | `prhub wait <owner/repo@sha> --until checks|green|deployed [--env production] [--workflow deploy]` (`--env` takes the repository's environment name; `production` also matches `prod`) |
 | Current state of a PR or commit | `prhub state <pr or owner/repo@sha>` (`--json` for scripts) |
 | My PRs that are ready to merge | `prhub list --ready` |
 | Is the daemon up? | `prhub status` |

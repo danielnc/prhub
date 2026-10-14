@@ -132,7 +132,10 @@ It works the same whatever a repository's workflow names, default branch or rele
 - **Deployed** reads [GitHub Deployments](https://docs.github.com/en/rest/deployments), plus commit statuses named
   like `deployed/<env>`. A successful deploy of a *later* commit counts when that commit contains yours (asked once
   per new deployment through the compare API), so nightly releases, batched deploys and a cancelled deploy followed
-  by a newer one all answer correctly. If a repository records no Deployments, use
+  by a newer one all answer correctly. A workflow makes one Deployment per job that names the environment (build,
+  migrate, deploy…), and GitHub marks each one successful when *its* job ends, so a Deployment made by a workflow run
+  counts only once that whole run has finished successfully; until then the environment shows `DEPLOYING`. If a
+  repository records no Deployments, use
   `--until green --workflow <name of its deploy workflow>`.
 
 A commit stays tracked for 6 hours after the last `state` or `wait` that asked about it.

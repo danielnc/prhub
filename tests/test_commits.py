@@ -8,17 +8,22 @@ OID = "a" * 40
 LATER = "b" * 40
 
 
-def suite(name, status="COMPLETED", conclusion="SUCCESS", runs=1, event="push", app="github-actions"):
+def suite(name, status="COMPLETED", conclusion="SUCCESS", runs=1, event="push", app="github-actions", url="u"):
     return {"app": {"slug": app}, "status": status, "conclusion": conclusion, "checkRuns": {"totalCount": runs},
-            "workflowRun": {"event": event, "url": "u", "workflow": {"name": name}} if event else None}
+            "workflowRun": {"event": event, "url": url, "workflow": {"name": name}} if event else None}
 
 
 def node(suites=(), statuses=(), deployments=(), committed="2026-10-10T10:00:00Z"):
     return {"object": {"oid": OID, "committedDate": committed,
                        "status": {"contexts": [{"context": c, "state": s, "targetUrl": None} for c, s in statuses]},
                        "checkSuites": {"nodes": list(suites)}},
-            "deployments": {"nodes": [{"commitOid": sha, "environment": env, "createdAt": at,
-                                       "latestStatus": {"state": st}} for sha, env, at, st in deployments]}}
+            "deployments": {"nodes": [{"commitOid": d[0], "environment": d[1], "createdAt": d[2],
+                                       "latestStatus": {"state": d[3], "logUrl": d[4] if len(d) > 4 else None}}
+                                      for d in deployments]}}
+
+
+RUN = "https://github.com/acme/api/actions/runs/7"
+JOB = RUN + "/job/70"
 
 
 # ---- naming a commit ----
@@ -147,6 +152,53 @@ def test_failed_deploy_of_this_commit_ends_the_wait():
     s = summarize(node(deployments=[(OID, "production", "2026-10-10T11:00:00Z", "FAILURE")]))
     met, dead = evaluate("deployed", s, None, env="production")
     assert not met and "FAILURE" in dead
+
+
+
+def test_a_deployment_counts_only_once_the_run_that_made_it_has_finished():
+    # one deploy run makes a Deployment per job that names the environment, and GitHub marks each SUCCESS when ITS
+    # job ends: the build job's deployment reads SUCCESS while migrate and deploy have not run
+    build = (OID, "production", "2026-10-10T11:00:00Z", "SUCCESS", JOB)
+    s = summarize(node([suite("Deploy", status="IN_PROGRESS", conclusion=None, url=RUN)], deployments=[build]))
+    assert s["envs"]["production"]["this"] == "DEPLOYING" and deploy_state(s, "production") == (False, None)
+    assert "production=DEPLOYING" in commits.one_line("acme/api@aaaaaaa", s)
+    assert evaluate("deployed", s, None, env="production") == (False, None)
+    nxt = (OID, "production", "2026-10-10T11:05:00Z", "IN_PROGRESS", RUN + "/job/71")
+    s = summarize(node([suite("Deploy", status="IN_PROGRESS", conclusion=None, url=RUN)], deployments=[build, nxt]))
+    assert deploy_state(s, "production")[0] is False
+    done = summarize(node([suite("Deploy", url=RUN)], deployments=[build]))
+    assert deploy_state(done, "production") == (True, None)
+    failed = summarize(node([suite("Deploy", conclusion="FAILURE", url=RUN)], deployments=[build]))
+    live, why = deploy_state(failed, "production")
+    assert not live and "FAILURE" in why
+
+
+def test_a_finished_deploy_of_this_commit_stays_live_while_a_redeploy_runs():
+    first = (OID, "production", "2026-10-10T11:00:00Z", "SUCCESS", JOB)
+    again = (OID, "production", "2026-10-10T12:00:00Z", "SUCCESS", "https://github.com/acme/api/actions/runs/8/job/80")
+    s = summarize(node([suite("Deploy", url=RUN)], deployments=[first, again]))
+    assert s["envs"]["production"]["this"] == "SUCCESS"
+
+
+def test_a_later_deploy_counts_once_its_run_has_finished():
+    later = (LATER, "production", "2026-10-11T01:00:00Z", "SUCCESS", JOB)
+    s = summarize(node(deployments=[later]))
+    assert needs_containment(s) == [] and commits.unknown_runs(s, commits.own_runs(s)) == ["7"]
+    commits.gate_deploys(s, {"7": ("IN_PROGRESS", None)})
+    assert needs_containment(s) == []
+    commits.gate_deploys(s, {"7": ("COMPLETED", "SUCCESS")})
+    assert needs_containment(s) == [("production", LATER)]
+    assert commits.unknown_runs(s, {"7": ("COMPLETED", "SUCCESS")}) == []
+    before = summarize(node(deployments=[later]))
+    after = summarize(node(deployments=[later]))
+    commits.gate_deploys(after, {"7": ("COMPLETED", "FAILURE")})  # the later deploy failed: no longer deploying
+    assert before["envs"]["production"]["deploying"] and not after["envs"]["production"]["deploying"]
+    assert commits.fingerprint(before) != commits.fingerprint(after)
+
+
+def test_a_deployment_made_outside_actions_goes_by_its_own_status():
+    s = summarize(node(deployments=[(OID, "production", "2026-10-10T11:00:00Z", "SUCCESS", "https://ci.example.com/1")]))
+    assert deploy_state(s, "production") == (True, None) and commits.run_id("https://ci.example.com/1") is None
 
 
 def test_deploy_status_context_counts_and_env_matters():

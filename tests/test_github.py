@@ -165,6 +165,44 @@ def test_contains_errors(urlopen):
         github.contains("acme", "api", "aaa", "bbb", "t")
 
 
+
+def test_run_state_reads_status_and_conclusion(urlopen):
+    calls, queue = urlopen
+    queue.append({"status": "completed", "conclusion": "success"})
+    assert github.run_state("acme", "api", "7", "t") == ("COMPLETED", "SUCCESS")
+    assert calls[0].full_url == "https://api.github.com/repos/acme/api/actions/runs/7"
+    queue.append({"status": "in_progress", "conclusion": None})
+    assert github.run_state("acme", "api", "7", "t") == ("IN_PROGRESS", None)
+
+
+def test_run_state_errors(urlopen):
+    _, queue = urlopen
+    queue.append(http_error(404, "Not Found"))
+    with pytest.raises(GitHubError, match="run HTTP 404") as e:
+        github.run_state("acme", "api", "7", "t")
+    assert not e.value.rate_limited
+    queue.append(http_error(403, "API rate limit exceeded"))
+    with pytest.raises(GitHubError) as e:
+        github.run_state("acme", "api", "7", "t")
+    assert e.value.rate_limited
+    queue.append(TimeoutError("slow"))
+    with pytest.raises(GitHubError, match="network"):
+        github.run_state("acme", "api", "7", "t")
+
+
+
+def test_a_429_is_a_rate_limit_whatever_its_body_says(urlopen):
+    _, queue = urlopen
+    for call in (lambda: github.run_state("acme", "api", "7", "t"),
+                 lambda: github.contains("acme", "api", "aaa", "bbb", "t"),
+                 lambda: github.graphql("query { viewer { login } }", token="t")):
+        queue.append(http_error(429, ""))
+        with pytest.raises(GitHubError) as e:
+            call()
+        assert e.value.rate_limited
+    assert github.rate_limited(403, "Resource not accessible") is False
+
+
 # ---- transient errors and batch splitting ----
 
 def test_transient_errors_are_marked(urlopen):

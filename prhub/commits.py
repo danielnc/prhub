@@ -28,6 +28,7 @@ OK = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 # Dispatched runs (a deploy button, a post-merge job) run on whatever the branch head is when they are started, like
 # cron runs, so one cancelled before it started says nothing about this commit.
 DISPATCH = {"workflow_dispatch", "repository_dispatch"}
+RUN_URL = re.compile(r"/actions/runs/(\d+)")
 CONDITIONS = ("checks", "green", "deployed", "change")
 
 
@@ -75,7 +76,7 @@ COMMIT_FIELDS = """
     status { contexts { context state targetUrl } }
     checkSuites(first: 50) { pageInfo { hasNextPage } nodes { app { slug } status conclusion checkRuns(first: 0) { totalCount }
       workflowRun { event url workflow { name } } } } } }
-  deployments(last: 30) { nodes { commitOid environment createdAt latestStatus { state } } }
+  deployments(last: 30) { nodes { commitOid environment createdAt latestStatus { state logUrl } } }
 """
 
 
@@ -117,14 +118,71 @@ def summarize(repo_node: dict) -> dict | None:
         if not d:
             continue
         st = (d.get("latestStatus") or {}).get("state") or "PENDING"
-        e = envs.setdefault(d.get("environment") or "?", {"this": None, "last_success": None})
+        run = run_id((d.get("latestStatus") or {}).get("logUrl"))
+        e = envs.setdefault(d.get("environment") or "?", {"mine": [], "successes": []})
         if d.get("commitOid") == oid:
-            e["this"] = st
+            e["mine"].append([st, run])
         if st == "SUCCESS":
-            e["last_success"] = {"sha": d.get("commitOid"), "at": d.get("createdAt")}
+            e["successes"].append({"sha": d.get("commitOid"), "at": d.get("createdAt"), "run": run})
     truncated = bool(((obj.get("checkSuites") or {}).get("pageInfo") or {}).get("hasNextPage"))
-    return {"oid": oid, "committed": obj.get("committedDate"), "runs": runs, "statuses": statuses, "envs": envs,
-            "truncated": truncated}
+    s = {"oid": oid, "committed": obj.get("committedDate"), "runs": runs, "statuses": statuses, "envs": envs,
+         "truncated": truncated}
+    gate_deploys(s, own_runs(s))
+    return s
+
+
+def run_id(url: str | None) -> str | None:
+    """The workflow run behind a deployment status (its log URL points at the job that deployed), or None."""
+    m = RUN_URL.search(url or "")
+    return m.group(1) if m else None
+
+
+def own_runs(s: dict) -> dict[str, tuple[str | None, str | None]]:
+    """{run id: (status, conclusion)} for the workflow runs read with this commit."""
+    return {rid: (r["status"], r["conclusion"]) for r in s["runs"] if (rid := run_id(r.get("url")))}
+
+
+def _run_finished(run: str | None, states: dict) -> bool | None:
+    """True when the run that made a deployment finished well, False when it ended badly, None while it runs or is
+    unknown. A deployment made outside GitHub Actions (no run) has only its own status to go by."""
+    if run is None:
+        return True
+    st = states.get(run)
+    if not st or st[0] != "COMPLETED":
+        return None
+    return (st[1] or "") in OK
+
+
+def gate_deploys(s: dict, states: dict) -> None:
+    """Set each environment's `this` (this commit's deploy state) and `last_success` from its deployments.
+
+    A workflow makes one Deployment per job that names the environment (build, migrate, deploy…), and GitHub marks each
+    one SUCCESS when ITS job ends, so the first can read SUCCESS while the rest of the deploy has not run. A deployment
+    made by a workflow run counts only once that whole run has finished well; until then it is DEPLOYING."""
+    for e in (s.get("envs") or {}).values():
+        this = None
+        for state, run in e.get("mine") or []:  # oldest first: the newest decides, unless an earlier one finished
+            if state == "SUCCESS":
+                done = _run_finished(run, states)
+                state = "SUCCESS" if done else "DEPLOYING" if done is None else "FAILURE"
+            if this != "SUCCESS":
+                this = state
+        e["this"] = this
+        good = [x for x in e.get("successes") or [] if _run_finished(x.get("run"), states)]
+        e["last_success"] = {"sha": good[-1]["sha"], "at": good[-1]["at"]} if good else None
+        # a deploy made after this commit whose run has not finished yet: not live here yet, but it may be soon
+        e["deploying"] = any(_run_finished(x.get("run"), states) is None for x in e.get("successes") or []
+                             if (x.get("at") or "") >= (s.get("committed") or ""))
+
+
+def unknown_runs(s: dict, states: dict) -> list[str]:
+    """Runs behind this commit's deployments, or behind later ones that may contain it, whose end is not known yet."""
+    out = []
+    for e in (s.get("envs") or {}).values():
+        cands = [run for state, run in e.get("mine") or [] if state == "SUCCESS"]
+        cands += [x.get("run") for x in e.get("successes") or [] if (x.get("at") or "") >= (s.get("committed") or "")]
+        out += [r for r in cands if r and r not in out and r not in states]
+    return out
 
 
 def needs_containment(s: dict) -> list[tuple[str, str]]:
@@ -182,7 +240,8 @@ def deploy_state(s: dict, env: str) -> tuple[bool, str | None]:
 def fingerprint(s: dict) -> tuple:
     return (tuple((r["name"], r["status"], r["conclusion"]) for r in s["runs"]),
             tuple((x["name"], x["state"]) for x in s["statuses"]),
-            tuple(sorted((k, v.get("this"), bool(v.get("live")), (v.get("last_success") or {}).get("sha"))
+            tuple(sorted((k, v.get("this"), bool(v.get("live")), (v.get("last_success") or {}).get("sha"),
+                          bool(v.get("deploying")))
                          for k, v in (s.get("envs") or {}).items())))
 
 

@@ -5,6 +5,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Polls no longer slow down with many watched commits after a deploy. The run behind a later commit's deploy was asked
+  once per watched commit it might contain, every poll (46 requests for 11 runs, polls of up to 200 s, seen on the
+  maintainer's machine 14/10 with about 100 watched commits). It is now asked at most once per poll, shared through
+  `runs.json`; a successful run is remembered, and one that ended badly is asked again every 10 minutes.
+
 ## [0.1.3] - 2026-10-14
 
 ### Fixed

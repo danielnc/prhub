@@ -214,6 +214,7 @@ Everything lives in `~/.local/state/prhub` (override with `PRHUB_HOME`):
 | `commits/<owner>__<repo>__<sha>.json` | one record per watched commit |
 | `watch.json`, `commit-watch.json` | what agents asked to track, and who asked (`PRHUB_CALLER`, else a tmux or Herdr pane id) |
 | `events.jsonl` | every state change, one JSON line each |
+| `runs.json` | deploy runs of later commits already asked about, shared by every commit they may contain |
 | `daemon.json`, `daemon.log` | daemon health, the GitHub budget left, and the log |
 
 Other tools can read these too. A dashboard, a merge queue or a status bar can use them without calling GitHub.

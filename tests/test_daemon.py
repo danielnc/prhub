@@ -7,7 +7,7 @@ from fakes import commit_node, pr_node
 
 from prhub import daemon, store
 from prhub.commits import CommitRef
-from prhub.daemon import Daemon, seconds_until
+from prhub.daemon import KEEP_COMMIT_WATCH, RUN_RECHECK, Daemon, seconds_until
 from prhub.github import GitHubError
 from prhub.refs import PRRef
 
@@ -144,47 +144,92 @@ def test_commit_live_through_a_later_deploy_asks_compare_once(gh):
 
 
 
+def due_again(*refs):
+    for ref in refs:  # a finished commit is otherwise re-read only every few minutes
+        rec = store.read_commit(ref)
+        rec["fetched_at"] -= 1000
+        store.write_commit(ref, rec)
+
+
+def runs_seen():
+    return store.read_json(store.home() / "runs.json", {})
+
+
+def age_runs(seconds):
+    store.write_json(store.home() / "runs.json", {k: [v[0], v[1], v[2] - seconds] for k, v in runs_seen().items()})
+
+
 def test_a_later_deploy_is_live_only_once_its_run_has_finished(gh):
     ref = CommitRef("acme", "api", "aaaaaaa")
     store.add_commit_watch(ref)
     gh.commits[ref] = commit_node(OID, deployments=[(LATER, "production", "2026-10-12T01:00:00Z", "SUCCESS",
                                                      "https://github.com/acme/api/actions/runs/9/job/90")])
+
+    def live():
+        return store.read_commit(ref)["summary"]["envs"]["production"]["live"]
+
     gh.run_answer = ("IN_PROGRESS", None)
     d = Daemon()
     d.poll()
-    rec = store.read_commit(ref)
-    assert rec["summary"]["envs"]["production"]["live"] is False and gh.calls["contains"] == 0 and rec["runs"] == {}
+    assert live() is False and gh.calls["contains"] == 0 and gh.calls["run"] == 1
     gh.run_answer = GitHubError("run HTTP 500")
-    rec["fetched_at"] -= 1000
-    store.write_commit(ref, rec)
-    d.poll()  # an ordinary error leaves the run unknown: still not live
-    assert store.read_commit(ref)["summary"]["envs"]["production"]["live"] is False
+    due_again(ref)
+    d.poll()  # a run still in progress is asked again next poll; an ordinary error leaves it unknown: not live
+    assert live() is False and gh.calls["run"] == 2
     gh.run_answer = ("COMPLETED", "FAILURE")
-    rec = store.read_commit(ref)
-    rec["fetched_at"] -= 1000
-    store.write_commit(ref, rec)
-    d.poll()  # a failed run is not remembered: a re-run keeps its id and may still succeed
-    rec = store.read_commit(ref)
-    assert rec["summary"]["envs"]["production"]["live"] is False and rec["runs"] == {}
+    due_again(ref)
+    d.poll()
+    assert live() is False and gh.calls["run"] == 3
     gh.run_answer = ("COMPLETED", "SUCCESS")
-    rec["fetched_at"] -= 1000
-    store.write_commit(ref, rec)
+    due_again(ref)
+    d.poll()  # a run that ended badly is not asked again right away...
+    assert live() is False and gh.calls["run"] == 3
+    age_runs(RUN_RECHECK + 1)
+    due_again(ref)
+    d.poll()  # ...but after RUN_RECHECK, since a re-run keeps its id and may succeed
+    assert live() is True and gh.calls["run"] == 4 and runs_seen()["acme/api#9"][:2] == ["COMPLETED", "SUCCESS"]
+    age_runs(RUN_RECHECK + 1)
+    due_again(ref)
     d.poll()
-    rec = store.read_commit(ref)
-    assert rec["summary"]["envs"]["production"]["live"] is True and rec["runs"] == {"9": ["COMPLETED", "SUCCESS"]}
-    calls = gh.calls["run"]
-    rec["fetched_at"] -= 1000
-    store.write_commit(ref, rec)
+    assert gh.calls["run"] == 4  # a successful run is remembered
+    age_runs(KEEP_COMMIT_WATCH + 1)
+    due_again(ref)
     d.poll()
-    assert gh.calls["run"] == calls  # a finished run is remembered
+    assert runs_seen() == {}  # and forgotten with the watches that could need it
     gh.run_answer = GitHubError("limit", rate_limited=True)
     gh.commits[ref] = commit_node(OID, deployments=[(LATER, "production", "2026-10-12T02:00:00Z", "SUCCESS",
                                                      "https://github.com/acme/api/actions/runs/10/job/100")])
-    rec = store.read_commit(ref)
-    rec["fetched_at"] -= 1000
-    store.write_commit(ref, rec)
+    due_again(ref)
     with pytest.raises(GitHubError):
         d.poll()
+
+
+
+@pytest.mark.parametrize("junk", [["not", "a", "dict"], {"acme/api#9": "x", "acme/api#8": [1, 2]}])
+def test_a_malformed_runs_file_is_ignored_and_rewritten(gh, junk):
+    ref = CommitRef("acme", "api", "aaaaaaa")
+    store.add_commit_watch(ref)
+    gh.commits[ref] = commit_node(OID, deployments=[(LATER, "production", "2026-10-12T01:00:00Z", "SUCCESS",
+                                                     "https://github.com/acme/api/actions/runs/9/job/90")])
+    store.write_json(store.home() / "runs.json", junk)
+    Daemon().poll()
+    assert store.read_commit(ref)["summary"]["envs"]["production"]["live"] is True
+    assert list(runs_seen()) == ["acme/api#9"]
+
+
+def test_commits_contained_by_one_deploy_run_ask_it_once_per_poll(gh):
+    refs = [CommitRef("acme", "api", c * 7) for c in "ac"]
+    for ref, oid in zip(refs, ("a" * 40, "c" * 40), strict=True):
+        store.add_commit_watch(ref)
+        gh.commits[ref] = commit_node(oid, deployments=[(LATER, "production", "2026-10-12T01:00:00Z", "SUCCESS",
+                                                         "https://github.com/acme/api/actions/runs/9/job/90")])
+    gh.run_answer = ("IN_PROGRESS", None)
+    d = Daemon()
+    d.poll()
+    assert gh.calls["run"] == 1
+    due_again(*refs)
+    d.poll()
+    assert gh.calls["run"] == 2  # still running: asked again, once
 
 
 def test_commit_with_an_older_deploy_is_not_live_and_needs_no_compare(gh):

@@ -21,6 +21,7 @@ KEEP_COMMIT_WATCH = 6 * 3600  # a commit stays tracked this long after the last 
 KEEP_COMMIT_FILE = 2 * 86400
 CLOSED_RECHECK = 600   # a merged/closed PR still being watched is re-read this often (it can be reopened)
 SETTLED_RECHECK = 300  # so is a commit whose runs have all finished (its deploy can still land later)
+RUN_RECHECK = 600  # a deploy run that ended badly is asked again this often: a re-run keeps its id
 TOKEN_TTL = 600  # re-read `gh auth token` this often; a slow or failing `gh` keeps the last good token meanwhile
 
 
@@ -165,26 +166,43 @@ class Daemon:
         if not refs:
             return {}, 0, 0
         data, rate = fetch_commits(refs, token)
+        # Deploy runs of later commits, shared by every commit they may contain: each is asked at most once per poll,
+        # a successful one is remembered, and one that ended badly is asked again every RUN_RECHECK.
+        runs_file = store.home() / "runs.json"
+        raw = store.read_json(runs_file, {})
+        # a hand-edited or half-written file must not stop every poll: keep only well-formed entries
+        seen = {k: v for k, v in raw.items() if isinstance(v, list) and len(v) == 3
+                and isinstance(v[2], (int, float))} if isinstance(raw, dict) else {}
+
+        def known(key: str) -> tuple | None:
+            v = seen.get(key)
+            if not v:
+                return None
+            status, concl, at = v
+            if at >= now or (status == "COMPLETED" and ((concl or "") in commits.OK or now - at < RUN_RECHECK)):
+                return status, concl
+            return None
+
         for ref, node in data.items():
             prev = store.read_commit(ref) or {}
             s = commits.summarize(node or {})
             if s is None:
                 store.write_commit(ref, {"ref": str(ref), "fetched_at": int(now), "missing": True})
                 continue
-            # A deployment counts once the workflow run that made it has finished. This commit's runs came with it;
-            # a later commit's deploy run is asked once per poll until it has succeeded, then remembered. A failed
-            # run is asked again, since a re-run keeps its id and may still succeed.
-            finished = {k: tuple(v) for k, v in (prev.get("runs") or {}).items()}
-            states = {**finished, **commits.own_runs(s)}
+            # A deployment counts once the workflow run that made it has finished; this commit's runs came with it.
+            states = commits.own_runs(s)
             for run in commits.unknown_runs(s, states):
-                try:
-                    states[run] = run_state(ref.owner, ref.repo, run, token)
-                except GitHubError as e:
-                    if e.rate_limited:
-                        raise
-                    continue
-                if states[run][0] == "COMPLETED" and (states[run][1] or "") in commits.OK:
-                    finished[run] = states[run]
+                key = f"{ref.owner}/{ref.repo}#{run}"
+                st = known(key)
+                if st is None:
+                    try:
+                        st = run_state(ref.owner, ref.repo, run, token)
+                    except GitHubError as e:
+                        if e.rate_limited:
+                            raise
+                        continue
+                    seen[key] = [st[0], st[1], now]
+                states[run] = st
             commits.gate_deploys(s, states)
             cache = dict(prev.get("contains") or {})
             for env, sha in commits.needs_containment(s):
@@ -202,8 +220,8 @@ class Daemon:
             old = prev.get("summary")
             if old is None or commits.fingerprint(old) != commits.fingerprint(s):
                 store.append_event({"at": int(now), "ref": str(ref), "commit": commits.one_line(str(ref), s)})
-            store.write_commit(ref, {"ref": str(ref), "fetched_at": int(now), "summary": s, "contains": cache,
-                                     "runs": {k: list(v) for k, v in finished.items()}})
+            store.write_commit(ref, {"ref": str(ref), "fetched_at": int(now), "summary": s, "contains": cache})
+        store.write_json(runs_file, {k: v for k, v in seen.items() if now - v[2] < KEEP_COMMIT_WATCH})
         return rate, len(refs), len(refs) - len(data)
 
     def prune(self, now: float) -> None:

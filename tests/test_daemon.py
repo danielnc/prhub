@@ -204,6 +204,19 @@ def test_a_later_deploy_is_live_only_once_its_run_has_finished(gh):
         d.poll()
 
 
+
+@pytest.mark.parametrize("junk", [["not", "a", "dict"], {"acme/api#9": "x", "acme/api#8": [1, 2]}])
+def test_a_malformed_runs_file_is_ignored_and_rewritten(gh, junk):
+    ref = CommitRef("acme", "api", "aaaaaaa")
+    store.add_commit_watch(ref)
+    gh.commits[ref] = commit_node(OID, deployments=[(LATER, "production", "2026-10-12T01:00:00Z", "SUCCESS",
+                                                     "https://github.com/acme/api/actions/runs/9/job/90")])
+    store.write_json(store.home() / "runs.json", junk)
+    Daemon().poll()
+    assert store.read_commit(ref)["summary"]["envs"]["production"]["live"] is True
+    assert list(runs_seen()) == ["acme/api#9"]
+
+
 def test_commits_contained_by_one_deploy_run_ask_it_once_per_poll(gh):
     refs = [CommitRef("acme", "api", c * 7) for c in "ac"]
     for ref, oid in zip(refs, ("a" * 40, "c" * 40), strict=True):

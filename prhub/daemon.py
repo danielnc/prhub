@@ -169,7 +169,10 @@ class Daemon:
         # Deploy runs of later commits, shared by every commit they may contain: each is asked at most once per poll,
         # a successful one is remembered, and one that ended badly is asked again every RUN_RECHECK.
         runs_file = store.home() / "runs.json"
-        seen = store.read_json(runs_file, {}) or {}
+        raw = store.read_json(runs_file, {})
+        # a hand-edited or half-written file must not stop every poll: keep only well-formed entries
+        seen = {k: v for k, v in raw.items() if isinstance(v, list) and len(v) == 3
+                and isinstance(v[2], (int, float))} if isinstance(raw, dict) else {}
 
         def known(key: str) -> tuple | None:
             v = seen.get(key)

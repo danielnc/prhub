@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-14
+
 ### Fixed
 
 - Polls no longer slow down with many watched commits after a deploy. The run behind a later commit's deploy was asked

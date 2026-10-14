@@ -13,6 +13,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   once that run has finished successfully (`DEPLOYING` until then); for a later commit's deploy, the daemon reads that
   run's state once per poll until it has succeeded (a failed run is asked again, since a re-run keeps its id).
 - An HTTP 429 from GitHub always counts as the rate limit (PAUSED), whatever its body says.
+- A GitHub response cut short mid-read (`IncompleteRead`, a truncated JSON body) is a transient network error: the
+  daemon reports DEGRADED and retries, instead of logging a crash.
 - A commit no longer reads `checks=FAILURE` because a workflow run was cancelled before any of its jobs started
   (replaced in its concurrency group by a newer run while it waited), a regression from the change below. Such a run
   shows as `NOT STARTED` and is neither a pass nor a failure; `green` reports it can never be met, since that

@@ -5,8 +5,19 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-14
+
 ### Fixed
 
+- `green` and `done` are no longer met while a workflow on the head is still waiting for its jobs. GitHub creates a
+  workflow's check suite at once but its check runs only when the jobs are created, which can take a minute (a
+  runner queue, a concurrency group), and its rollup ignores a suite with no runs, so a fast workflow that already
+  passed made the PR or commit read SUCCESS. An unfinished workflow run now keeps checks PENDING, for PRs and
+  commits. A head with more than 50 check suites stays PENDING, since an unread suite may still be running.
+- A workflow run cancelled before any of its jobs started (replaced in its concurrency group by a newer run while it
+  waited) is not a failure. It shows as `NOT STARTED`; `green` reports it can never be met, since that commit's CI
+  never ran there, unless another run of the same workflow ran on it. A dispatched run cancelled before it started
+  is left out, like a cron run. Other cancelled runs are listed as `name (cancelled)`.
 - `deployed` is no longer met while a deploy is still running. A workflow makes one Deployment per job that names
   the environment, and GitHub marks each one successful when its own job ends, so the build job's Deployment read
   successful while the migrate and deploy jobs had not run yet. A Deployment made by a workflow run now counts only
@@ -15,17 +26,6 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - An HTTP 429 from GitHub always counts as the rate limit (PAUSED), whatever its body says.
 - A GitHub response cut short mid-read (`IncompleteRead`, a truncated JSON body) is a transient network error: the
   daemon reports DEGRADED and retries, instead of logging a crash.
-- A commit no longer reads `checks=FAILURE` because a workflow run was cancelled before any of its jobs started
-  (replaced in its concurrency group by a newer run while it waited), a regression from the change below. Such a run
-  shows as `NOT STARTED` and is neither a pass nor a failure; `green` reports it can never be met, since that
-  commit's CI never ran, unless another run of the same workflow ran on it. A dispatched run cancelled before it
-  started is left out, like a cron run. Other cancelled runs are listed as `name (cancelled)`.
-- `green` and `done` are no longer met while a workflow on the head is still waiting for its jobs. GitHub creates a
-  workflow's check suite at once but its check runs only when the jobs are created, which can take a minute (a
-  runner queue, a concurrency group); its rollup ignores a suite with no runs, so a fast workflow that already
-  passed made the PR or commit read SUCCESS. An unfinished workflow run now keeps checks PENDING, for PRs and
-  commits, and a commit's workflow run that ended before its jobs started counts as that workflow's result. A head
-  with more than 50 check suites stays PENDING rather than SUCCESS, since an unread suite may still be running.
 
 ## [0.1.2] - 2026-10-12
 

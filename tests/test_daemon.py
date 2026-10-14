@@ -206,7 +206,7 @@ def test_a_later_deploy_is_live_only_once_its_run_has_finished(gh):
 
 def test_commits_contained_by_one_deploy_run_ask_it_once_per_poll(gh):
     refs = [CommitRef("acme", "api", c * 7) for c in "ac"]
-    for ref, oid in zip(refs, ("a" * 40, "c" * 40)):
+    for ref, oid in zip(refs, ("a" * 40, "c" * 40), strict=True):
         store.add_commit_watch(ref)
         gh.commits[ref] = commit_node(oid, deployments=[(LATER, "production", "2026-10-12T01:00:00Z", "SUCCESS",
                                                          "https://github.com/acme/api/actions/runs/9/job/90")])

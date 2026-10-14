@@ -165,6 +165,31 @@ def test_contains_errors(urlopen):
         github.contains("acme", "api", "aaa", "bbb", "t")
 
 
+
+def test_run_state_reads_status_and_conclusion(urlopen):
+    calls, queue = urlopen
+    queue.append({"status": "completed", "conclusion": "success"})
+    assert github.run_state("acme", "api", "7", "t") == ("COMPLETED", "SUCCESS")
+    assert calls[0].full_url == "https://api.github.com/repos/acme/api/actions/runs/7"
+    queue.append({"status": "in_progress", "conclusion": None})
+    assert github.run_state("acme", "api", "7", "t") == ("IN_PROGRESS", None)
+
+
+def test_run_state_errors(urlopen):
+    _, queue = urlopen
+    queue.append(http_error(404, "Not Found"))
+    with pytest.raises(GitHubError, match="run HTTP 404") as e:
+        github.run_state("acme", "api", "7", "t")
+    assert not e.value.rate_limited
+    queue.append(http_error(403, "API rate limit exceeded"))
+    with pytest.raises(GitHubError) as e:
+        github.run_state("acme", "api", "7", "t")
+    assert e.value.rate_limited
+    queue.append(TimeoutError("slow"))
+    with pytest.raises(GitHubError, match="network"):
+        github.run_state("acme", "api", "7", "t")
+
+
 # ---- transient errors and batch splitting ----
 
 def test_transient_errors_are_marked(urlopen):

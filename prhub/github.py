@@ -194,3 +194,20 @@ def contains(owner: str, repo: str, sha: str, newer: str, token: str) -> bool:
                           rate_limited=e.code in (403, 429) and "rate limit" in text.lower()) from None
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise GitHubError(f"network: {e}") from None
+
+
+def run_state(owner: str, repo: str, run: str, token: str) -> tuple[str, str | None]:
+    """(status, conclusion) of one workflow run, upper-cased like GraphQL's (REST GET actions/runs/{id})."""
+    req = urllib.request.Request(f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run}",
+                                 headers={"Authorization": f"bearer {token}", "User-Agent": "prhub",
+                                          "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            d = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        text = e.read().decode("utf-8", "replace")[:200]
+        raise GitHubError(f"run HTTP {e.code}: {text}",
+                          rate_limited=e.code in (403, 429) and "rate limit" in text.lower()) from None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise GitHubError(f"network: {e}") from None
+    return (d.get("status") or "").upper(), (d.get("conclusion") or "").upper() or None

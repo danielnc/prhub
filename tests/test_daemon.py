@@ -25,7 +25,8 @@ class FakeGitHub:
         self.failing = []
         self.commits = {}
         self.contains_answer = True
-        self.calls = {"discover": 0, "prs": 0, "failing": 0, "commits": 0, "contains": 0}
+        self.run_answer = ("COMPLETED", "SUCCESS")
+        self.calls = {"discover": 0, "prs": 0, "failing": 0, "commits": 0, "contains": 0, "run": 0}
         self.rate = {"remaining": 4000, "resetAt": "2026-10-11T20:00:00Z"}
 
     def install(self, monkeypatch):
@@ -35,6 +36,7 @@ class FakeGitHub:
         monkeypatch.setattr(daemon, "fetch_failing", self.fetch_failing)
         monkeypatch.setattr(daemon, "fetch_commits", self.fetch_commits)
         monkeypatch.setattr(daemon, "contains", self.contains)
+        monkeypatch.setattr(daemon, "run_state", self.run_state)
         return self
 
     def discover_open(self, query, token):
@@ -52,6 +54,12 @@ class FakeGitHub:
     def fetch_commits(self, refs, token):
         self.calls["commits"] += 1
         return {r: self.commits.get(r) for r in refs}, self.rate
+
+    def run_state(self, owner, repo, run, token):
+        self.calls["run"] += 1
+        if isinstance(self.run_answer, Exception):
+            raise self.run_answer
+        return self.run_answer
 
     def contains(self, owner, repo, sha, newer, token):
         self.calls["contains"] += 1
@@ -133,6 +141,44 @@ def test_commit_live_through_a_later_deploy_asks_compare_once(gh):
     assert rec["summary"]["envs"]["production"]["live"] is True and rec["contains"] == {LATER: True}
     d.poll()
     assert gh.calls["contains"] == 1  # remembered per deployment
+
+
+
+def test_a_later_deploy_is_live_only_once_its_run_has_finished(gh):
+    ref = CommitRef("acme", "api", "aaaaaaa")
+    store.add_commit_watch(ref)
+    gh.commits[ref] = commit_node(OID, deployments=[(LATER, "production", "2026-10-12T01:00:00Z", "SUCCESS",
+                                                     "https://github.com/acme/api/actions/runs/9/job/90")])
+    gh.run_answer = ("IN_PROGRESS", None)
+    d = Daemon()
+    d.poll()
+    rec = store.read_commit(ref)
+    assert rec["summary"]["envs"]["production"]["live"] is False and gh.calls["contains"] == 0 and rec["runs"] == {}
+    gh.run_answer = GitHubError("run HTTP 500")
+    rec["fetched_at"] -= 1000
+    store.write_commit(ref, rec)
+    d.poll()  # an ordinary error leaves the run unknown: still not live
+    assert store.read_commit(ref)["summary"]["envs"]["production"]["live"] is False
+    gh.run_answer = ("COMPLETED", "SUCCESS")
+    rec = store.read_commit(ref)
+    rec["fetched_at"] -= 1000
+    store.write_commit(ref, rec)
+    d.poll()
+    rec = store.read_commit(ref)
+    assert rec["summary"]["envs"]["production"]["live"] is True and rec["runs"] == {"9": ["COMPLETED", "SUCCESS"]}
+    calls = gh.calls["run"]
+    rec["fetched_at"] -= 1000
+    store.write_commit(ref, rec)
+    d.poll()
+    assert gh.calls["run"] == calls  # a finished run is remembered
+    gh.run_answer = GitHubError("limit", rate_limited=True)
+    gh.commits[ref] = commit_node(OID, deployments=[(LATER, "production", "2026-10-12T02:00:00Z", "SUCCESS",
+                                                     "https://github.com/acme/api/actions/runs/10/job/100")])
+    rec = store.read_commit(ref)
+    rec["fetched_at"] -= 1000
+    store.write_commit(ref, rec)
+    with pytest.raises(GitHubError):
+        d.poll()
 
 
 def test_commit_with_an_older_deploy_is_not_live_and_needs_no_compare(gh):

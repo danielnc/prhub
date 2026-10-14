@@ -32,8 +32,9 @@ def commit_node(oid="a" * 40, runs=(("CI", "COMPLETED", "SUCCESS"),), deployment
                "workflowRun": {"event": "push", "url": "u", "workflow": {"name": name}}} for name, st, concl in runs]
     return {"object": {"oid": oid, "committedDate": committed, "status": {"contexts": []},
                        "checkSuites": {"nodes": suites}},
-            "deployments": {"nodes": [{"commitOid": sha, "environment": env, "createdAt": at,
-                                       "latestStatus": {"state": st}} for sha, env, at, st in deployments]}}
+            "deployments": {"nodes": [{"commitOid": d[0], "environment": d[1], "createdAt": d[2],
+                                       "latestStatus": {"state": d[3], "logUrl": d[4] if len(d) > 4 else None}}
+                                      for d in deployments]}}
 
 
 def healthy_daemon(**extra):

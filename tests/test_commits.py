@@ -189,11 +189,16 @@ def test_a_later_deploy_counts_once_its_run_has_finished():
     commits.gate_deploys(s, {"7": ("COMPLETED", "SUCCESS")})
     assert needs_containment(s) == [("production", LATER)]
     assert commits.unknown_runs(s, {"7": ("COMPLETED", "SUCCESS")}) == []
+    before = summarize(node(deployments=[later]))
+    after = summarize(node(deployments=[later]))
+    commits.gate_deploys(after, {"7": ("COMPLETED", "FAILURE")})  # the later deploy failed: no longer deploying
+    assert before["envs"]["production"]["deploying"] and not after["envs"]["production"]["deploying"]
+    assert commits.fingerprint(before) != commits.fingerprint(after)
 
 
 def test_a_deployment_made_outside_actions_goes_by_its_own_status():
-    s = summarize(node(deployments=[(OID, "production", "2026-10-10T11:00:00Z", "SUCCESS", "https://ci.example/1")]))
-    assert deploy_state(s, "production") == (True, None) and commits.run_id("https://ci.example/1") is None
+    s = summarize(node(deployments=[(OID, "production", "2026-10-10T11:00:00Z", "SUCCESS", "https://ci.example.com/1")]))
+    assert deploy_state(s, "production") == (True, None) and commits.run_id("https://ci.example.com/1") is None
 
 
 def test_deploy_status_context_counts_and_env_matters():

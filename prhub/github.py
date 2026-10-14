@@ -41,6 +41,11 @@ class GitHubError(RuntimeError):
         self.transient = transient
 
 
+def rate_limited(code: int, text: str) -> bool:
+    """429 is always a rate limit; a 403 is one only when GitHub says so (otherwise it is a permission error)."""
+    return code == 429 or (code == 403 and "rate limit" in text.lower())
+
+
 def gh_token(timeout: int = 30) -> str:
     """The token `gh` is logged in with."""
     try:
@@ -67,7 +72,7 @@ def graphql(query: str, variables: dict | None = None, token: str | None = None,
             payload = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         text = e.read().decode("utf-8", "replace")[:300]
-        limited = e.code in (403, 429) and "rate limit" in text.lower()
+        limited = rate_limited(e.code, text)
         raise GitHubError(f"HTTP {e.code}: {text}", rate_limited=limited,
                           reset_at=e.headers.get("x-ratelimit-reset"), transient=e.code >= 500) from None
     except (urllib.error.URLError, TimeoutError, OSError) as e:
@@ -191,7 +196,7 @@ def contains(owner: str, repo: str, sha: str, newer: str, token: str) -> bool:
     except urllib.error.HTTPError as e:
         text = e.read().decode("utf-8", "replace")[:200]
         raise GitHubError(f"compare HTTP {e.code}: {text}",
-                          rate_limited=e.code in (403, 429) and "rate limit" in text.lower()) from None
+                          rate_limited=rate_limited(e.code, text)) from None
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise GitHubError(f"network: {e}") from None
 
@@ -207,7 +212,7 @@ def run_state(owner: str, repo: str, run: str, token: str) -> tuple[str, str | N
     except urllib.error.HTTPError as e:
         text = e.read().decode("utf-8", "replace")[:200]
         raise GitHubError(f"run HTTP {e.code}: {text}",
-                          rate_limited=e.code in (403, 429) and "rate limit" in text.lower()) from None
+                          rate_limited=rate_limited(e.code, text)) from None
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise GitHubError(f"network: {e}") from None
     return (d.get("status") or "").upper(), (d.get("conclusion") or "").upper() or None

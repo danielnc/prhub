@@ -240,7 +240,8 @@ def deploy_state(s: dict, env: str) -> tuple[bool, str | None]:
 def fingerprint(s: dict) -> tuple:
     return (tuple((r["name"], r["status"], r["conclusion"]) for r in s["runs"]),
             tuple((x["name"], x["state"]) for x in s["statuses"]),
-            tuple(sorted((k, v.get("this"), bool(v.get("live")), (v.get("last_success") or {}).get("sha"))
+            tuple(sorted((k, v.get("this"), bool(v.get("live")), (v.get("last_success") or {}).get("sha"),
+                          bool(v.get("deploying")))
                          for k, v in (s.get("envs") or {}).items())))
 
 

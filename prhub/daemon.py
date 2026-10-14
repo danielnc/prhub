@@ -172,7 +172,8 @@ class Daemon:
                 store.write_commit(ref, {"ref": str(ref), "fetched_at": int(now), "missing": True})
                 continue
             # A deployment counts once the workflow run that made it has finished. This commit's runs came with it;
-            # a later commit's deploy run is asked once per poll while it runs, then remembered.
+            # a later commit's deploy run is asked once per poll until it has succeeded, then remembered. A failed
+            # run is asked again, since a re-run keeps its id and may still succeed.
             finished = {k: tuple(v) for k, v in (prev.get("runs") or {}).items()}
             states = {**finished, **commits.own_runs(s)}
             for run in commits.unknown_runs(s, states):
@@ -182,7 +183,7 @@ class Daemon:
                     if e.rate_limited:
                         raise
                     continue
-                if states[run][0] == "COMPLETED":
+                if states[run][0] == "COMPLETED" and (states[run][1] or "") in commits.OK:
                     finished[run] = states[run]
             commits.gate_deploys(s, states)
             cache = dict(prev.get("contains") or {})
@@ -195,8 +196,8 @@ class Daemon:
                             raise
                         continue
                 s["envs"][env]["live"] = cache.get(sha)
-            for e in s["envs"].values():  # the last good deploy predates this commit, or a later one still runs: not live yet
-                if "live" not in e and e.get("this") != "SUCCESS" and (e.get("last_success") or e.get("deploying")):
+            for e in s["envs"].values():  # deployed there, but not this commit or a finished deploy containing it
+                if "live" not in e and e.get("this") != "SUCCESS" and (e.get("successes") or e.get("last_success")):
                     e["live"] = False
             old = prev.get("summary")
             if old is None or commits.fingerprint(old) != commits.fingerprint(s):

@@ -159,8 +159,14 @@ def test_a_later_deploy_is_live_only_once_its_run_has_finished(gh):
     store.write_commit(ref, rec)
     d.poll()  # an ordinary error leaves the run unknown: still not live
     assert store.read_commit(ref)["summary"]["envs"]["production"]["live"] is False
-    gh.run_answer = ("COMPLETED", "SUCCESS")
+    gh.run_answer = ("COMPLETED", "FAILURE")
     rec = store.read_commit(ref)
+    rec["fetched_at"] -= 1000
+    store.write_commit(ref, rec)
+    d.poll()  # a failed run is not remembered: a re-run keeps its id and may still succeed
+    rec = store.read_commit(ref)
+    assert rec["summary"]["envs"]["production"]["live"] is False and rec["runs"] == {}
+    gh.run_answer = ("COMPLETED", "SUCCESS")
     rec["fetched_at"] -= 1000
     store.write_commit(ref, rec)
     d.poll()

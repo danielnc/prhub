@@ -190,6 +190,19 @@ def test_run_state_errors(urlopen):
         github.run_state("acme", "api", "7", "t")
 
 
+
+def test_a_429_is_a_rate_limit_whatever_its_body_says(urlopen):
+    _, queue = urlopen
+    for call in (lambda: github.run_state("acme", "api", "7", "t"),
+                 lambda: github.contains("acme", "api", "aaa", "bbb", "t"),
+                 lambda: github.graphql("query { viewer { login } }", token="t")):
+        queue.append(http_error(429, ""))
+        with pytest.raises(GitHubError) as e:
+            call()
+        assert e.value.rate_limited
+    assert github.rate_limited(403, "Resource not accessible") is False
+
+
 # ---- transient errors and batch splitting ----
 
 def test_transient_errors_are_marked(urlopen):

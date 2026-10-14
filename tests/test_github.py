@@ -1,3 +1,4 @@
+import http.client
 import json
 import subprocess
 import urllib.error
@@ -79,6 +80,17 @@ def test_network_errors(urlopen):
     queue.append(urllib.error.URLError("no route"))
     with pytest.raises(GitHubError, match="network"):
         github.graphql("q", token="t")
+
+
+
+@pytest.mark.parametrize("broken", [http.client.IncompleteRead(b"", 23679), b'{"data": {"rateLim'])
+def test_a_response_cut_short_is_a_transient_network_error(urlopen, broken):
+    _, queue = urlopen
+    for call in (lambda: github.graphql("q", token="t"), lambda: github.run_state("acme", "api", "7", "t"),
+                 lambda: github.contains("acme", "api", "aaa", "bbb", "t")):
+        queue.append(broken)
+        with pytest.raises(GitHubError, match="network"):
+            call()
 
 
 def test_graphql_level_rate_limit(urlopen):

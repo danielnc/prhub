@@ -44,7 +44,7 @@ def healthy_daemon(**extra):
 
 class FakeResponse:
     def __init__(self, payload):
-        self.body = json.dumps(payload).encode()
+        self.body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
 
     def read(self):
         return self.body

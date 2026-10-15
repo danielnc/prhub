@@ -5,21 +5,24 @@ prhub while waiting on GitHub, read [docs/agents.md](docs/agents.md) instead.
 
 ## What this repo is
 
-A standard-library-only Python package (`prhub/`) with one daemon and a CLI that reads the daemon's files.
+One Rust binary (`src/`) with a daemon and a CLI that reads the daemon's files. PyPI gets it as a binary wheel
+(maturin, `pyproject.toml`), so `uv tool install prhub` works without Rust.
 
 ## Commands
 
 ```bash
-uv sync                    # dev tools only (pytest, pytest-cov, ruff); the runtime needs nothing
-make check                 # ruff + the offline test suite; must pass before every commit
+make fmt                   # cargo fmt
+make check                 # rustfmt, clippy -D warnings and the offline test suite; what CI runs
 make check-secrets         # gitleaks over the full history
-PRHUB_HOME=/tmp/prhub-dev uv run python -m prhub daemon --once   # one real poll, isolated from an installed daemon
+PRHUB_HOME=/tmp/prhub-dev cargo run -- daemon --once   # one real poll, isolated from an installed daemon
 ```
 
 ## Rules
 
-- **Runtime is stdlib only.** No new dependencies in `prhub/`.
-- **Tests are offline.** Build GraphQL responses by hand in GitHub's shape (see `node()` and `pr()` in the tests).
+- **Few dependencies.** The crates in `Cargo.toml` (clap, serde, regex, toml, ureq, libc) are the whole list; add one
+  only with a reason in the pull request.
+- **Tests are offline.** Build GraphQL responses by hand in GitHub's shape (see `node()` in `src/commits.rs` and `pr()` in
+  `src/conditions.rs`); GitHub itself is a fake behind the `Api` and `Transport` traits.
   Write a failing test first for any behaviour change.
 - **Only the daemon calls GitHub.** `state`, `wait`, `list` and the hook read local files. Keep it that way: an extra
   API call in a command that agents run in a loop is exactly the problem prhub exists to remove.
@@ -36,12 +39,13 @@ PRHUB_HOME=/tmp/prhub-dev uv run python -m prhub daemon --once   # one real poll
 
 | Path | What |
 |---|---|
-| `prhub/daemon.py` | the poll loop: discovery, batched reads, backoff, pruning |
-| `prhub/github.py` | GraphQL and REST calls (the only module that talks to GitHub) |
-| `prhub/conditions.py` | PR summary and the PR conditions (`done`, `green`, …) |
-| `prhub/commits.py` | commit refs, CI rollup, deployments and the commit conditions |
-| `prhub/refs.py` | turning URLs, `owner/repo#N` and nicknames into PR refs |
-| `prhub/store.py` | config, state files, watches, daemon health |
-| `prhub/cli.py` | the commands, the Claude Code hook and the service installers |
-| `fuzz/`, `.clusterfuzzlite/` | Atheris fuzz targets for the parsers and the hook matcher, and their ClusterFuzzLite build |
-| `.github/workflows/publish.yml` | PyPI release, SLSA provenance and release assets (`docs/releasing.md`) |
+| `src/daemon.rs` | the poll loop: discovery, batched reads, backoff, pruning |
+| `src/github.rs` | GraphQL and REST calls (the only module that talks to GitHub) |
+| `src/conditions.rs` | PR summary and the PR conditions (`done`, `green`, …) |
+| `src/commits.rs` | commit refs, CI rollup, deployments and the commit conditions |
+| `src/refs.rs` | turning URLs, `owner/repo#N` and nicknames into PR refs |
+| `src/store.rs` | config, state files, watches, daemon health |
+| `src/hook.rs` | the Claude Code hook's command matcher |
+| `src/cli.rs` | the commands and the service installers |
+| `fuzz/`, `.clusterfuzzlite/` | cargo-fuzz targets for the parsers and the hook matcher, and their ClusterFuzzLite build |
+| `.github/workflows/publish.yml` | wheels, binaries, SLSA provenance, release assets and PyPI (`docs/releasing.md`) |

@@ -7,30 +7,29 @@ welcome.
 
 ```bash
 git clone https://github.com/danielnc/prhub && cd prhub
-uv sync                       # pytest, pytest-cov and ruff; prhub itself has no dependencies
-make check                    # ruff and the offline test suite: GitHub is never called
+make check                    # rustfmt, clippy and the offline test suite (stable Rust): GitHub is never called
 pre-commit install            # optional: the gitleaks hook blocks commits that contain tokens
 ```
 
 To run your checkout for real, point it at a scratch state directory so it does not disturb an installed daemon:
 
 ```bash
-PRHUB_HOME=/tmp/prhub-dev uv run python -m prhub daemon --once
-PRHUB_HOME=/tmp/prhub-dev uv run python -m prhub status
+PRHUB_HOME=/tmp/prhub-dev cargo run -- daemon --once
+PRHUB_HOME=/tmp/prhub-dev cargo run -- status
 ```
 
-CI (`.github/workflows/ci.yml`) runs on every pull request: pytest on Python 3.11 to 3.14, ruff, a build and
-clean-venv install of the wheel, and a gitleaks scan of the full history. Its `ci` job must pass, and `main` only
-changes through pull requests. Pull requests that touch `prhub/` are also fuzzed by ClusterFuzzLite (`fuzz/`,
+CI (`.github/workflows/ci.yml`) runs on every pull request: the tests on Linux and macOS, coverage (85% of lines,
+gated), rustfmt and clippy, a build and clean-venv install of the wheel, and a gitleaks scan of the full history. Its `ci` job must pass, and `main` only
+changes through pull requests. Pull requests that touch `src/` are also fuzzed by ClusterFuzzLite (`fuzz/`,
 `.clusterfuzzlite/`): if it finds a crash, the input that caused it is in the job's artifacts. CodeQL and CodeRabbit also review pull requests.
 Releases are cut by the maintainer: see [docs/releasing.md](docs/releasing.md).
 
 ## Making a change
 
 1. Open an issue first for anything larger than a bug fix, so we can agree on the approach.
-2. Write a failing test, then the change. Tests live in `tests/` and never touch the network: GraphQL responses are
-   built by hand in the shape GitHub returns them.
-3. Keep the runtime standard-library only.
+2. Write a failing test, then the change. Tests sit next to the code (`#[cfg(test)]` in each `src/` module) and never
+   touch the network: GraphQL responses are built by hand in the shape GitHub returns them.
+3. Keep the dependency list short: a new crate needs a reason in the pull request.
 4. Conditions are a contract with the agents that wait on them. If you change what `done`, `green` or `deployed`
    mean, say so in the pull request and in `CHANGELOG.md`, and pin the new meaning with a test.
 5. Add a line to `CHANGELOG.md` under "Unreleased".

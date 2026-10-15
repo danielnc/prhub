@@ -1,8 +1,11 @@
-.PHONY: check check-secrets
+.PHONY: check fmt check-secrets
 
-# ruff and the offline test suite; what CI's test and lint jobs run
+# rustfmt, clippy and the offline test suite; what CI's test and lint jobs run
 check:
-	uv run ruff check . && uv run pytest -q
+	cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked
+
+fmt:
+	cargo fmt
 
 # gitleaks over the full history; what CI's gitleaks job runs
 check-secrets:

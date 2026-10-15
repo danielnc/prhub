@@ -1,0 +1,23 @@
+[package]
+name = "prhub-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+prhub = { path = ".." }
+
+[[bin]]
+name = "fuzz_parsers"
+path = "fuzz_targets/fuzz_parsers.rs"
+test = false
+doc = false
+bench = false
+
+# Not part of the main crate's workspace: cargo-fuzz builds it on its own, with a nightly toolchain.
+[workspace]
+members = ["."]

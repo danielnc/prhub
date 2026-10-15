@@ -1,4 +1,4 @@
-# CodeQL code scanning for Python with the default query suite: on pull requests, pushes to main, and weekly.
+# CodeQL code scanning for Rust with the default query suite: on pull requests, pushes to main, and weekly.
 # Code scanning is free for public repositories only, so the job skips itself while the repository is private.
 name: CodeQL
 
@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   analyze:
-    name: CodeQL (python)
+    name: CodeQL (rust)
     if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     permissions:
@@ -31,9 +31,9 @@ jobs:
 
       - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
-          languages: python
+          languages: rust
           build-mode: none
 
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
-          category: /language:python
+          category: /language:rust

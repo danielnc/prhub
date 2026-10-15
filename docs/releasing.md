@@ -1,6 +1,7 @@
 # Releasing
 
-prhub is published to [PyPI](https://pypi.org/project/prhub/) by the
+prhub is published to [PyPI](https://pypi.org/project/prhub/) (binary wheels for macOS and Linux, plus an sdist) and
+to the GitHub release (standalone binaries) by the
 [`publish.yml`](../.github/workflows/publish.yml) workflow whenever a `v*` tag is pushed. The workflow uses PyPI
 [Trusted Publishing](https://docs.pypi.org/trusted-publishers/): PyPI trusts this repository's workflow through
 OpenID Connect, so no API token is stored anywhere. Only a maintainer can publish.
@@ -28,7 +29,8 @@ OpenID Connect, so no API token is stored anywhere. Only a maintainer can publis
 
 ## Cutting a release
 
-1. On a branch, bump `__version__` in `prhub/__init__.py` (the only place the version lives) and move the
+1. On a branch, bump `version` in `Cargo.toml` (the only place the version lives; run `cargo update -p prhub` so
+   `Cargo.lock` follows) and move the
    `[Unreleased]` entries in `CHANGELOG.md` under the new version and date. Merge the pull request.
 2. Create the GitHub release on `main`, with the CHANGELOG section as its notes. This creates and pushes the tag:
 
@@ -36,11 +38,11 @@ OpenID Connect, so no API token is stored anywhere. Only a maintainer can publis
    gh release create v0.2.0 --target main --title "prhub 0.2.0" --notes "<the CHANGELOG section>"
    ```
 
-3. The tag starts the workflow. It checks that the tag equals `v` + `prhub.__version__`, runs ruff and the tests,
-   builds the sdist and wheel, and installs the wheel in a clean venv. Then, in order:
-   1. the SLSA generator signs build provenance for the wheel and sdist, and attaches `prhub.intoto.jsonl` to the
-      release;
-   2. the wheel and sdist are attached to the release;
+3. The tag starts the workflow. It checks that the tag equals `v` + the version in `Cargo.toml`, runs clippy and the
+   tests, then builds a wheel and a standalone binary for Linux x86_64, Linux aarch64 (both for glibc 2.17 and later)
+   and macOS (universal), plus the sdist, and installs each wheel in a clean venv. Then, in order:
+   1. the SLSA generator signs build provenance for all of them, and attaches `prhub.intoto.jsonl` to the release;
+   2. the binaries, wheels and sdist are attached to the release;
    3. only then is the package uploaded to PyPI (with PEP 740 attestations), after your approval of the `pypi`
       environment if you set one. If any earlier step fails, nothing reaches PyPI.
 

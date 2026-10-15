@@ -15,42 +15,52 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   test:
-    name: test (Python ${{ matrix.python }})
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # pyproject: requires-python = ">=3.11"
-        python: ["3.11", "3.12", "3.13", "3.14"]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      - name: cargo test
+        run: cargo test --locked
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: ${{ matrix.python }}
+          persist-credentials: false
 
-      - name: Install the dev tools
-        run: uv sync --locked
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component llvm-tools-preview && rustup default stable
 
-      - name: pytest
-        if: matrix.python != '3.13'
-        run: uv run pytest -q
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-llvm-cov
 
-      # Coverage is measured on one Python version only, and uploading it can never fail CI.
-      - name: pytest with coverage
-        if: matrix.python == '3.13'
-        run: uv run pytest -q --cov=prhub --cov-report=xml --cov-report=term-missing --cov-fail-under=90
+      # Coverage is gated here, and uploading it can never fail CI.
+      - name: cargo llvm-cov
+        run: cargo llvm-cov --locked --lcov --output-path lcov.info --fail-under-lines 85
 
       - name: Upload coverage to Codecov
-        if: matrix.python == '3.13'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage.xml
+          files: lcov.info
           fail_ci_if_error: false
 
   lint:
@@ -61,10 +71,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable
 
-      - name: ruff
-        run: uv run --locked ruff check .
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
 
   package:
     name: package
@@ -74,13 +88,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
-      - name: Build the sdist and wheel
-        run: uv build
+      - name: Build the wheel and sdist
+        run: uvx --from "maturin>=1.9,<2" maturin build --release --locked --sdist --out dist
 
       - name: Install the wheel in a clean venv and run the command
-        # Run outside the checkout so the import can only come from the installed wheel.
+        # Run outside the checkout so the command can only come from the installed wheel.
         working-directory: ${{ runner.temp }}
         env:
           DIST: ${{ github.workspace }}/dist
@@ -94,6 +111,28 @@ jobs:
           # with no daemon, status must say so and exit 4
           set +e; smoke/bin/prhub status; code=$?; set -e
           test "$code" = 4
+
+  binary:
+    name: binary (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      - name: Release build
+        run: cargo build --release --locked && target/release/prhub --version
+
+      # A pull request's own build, to try it on a real machine before release.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: prhub-macos
+          path: target/release/prhub
+          retention-days: 7
+          if-no-files-found: error
 
   gitleaks:
     name: gitleaks
@@ -121,7 +160,7 @@ jobs:
   ci:
     name: ci
     if: always()
-    needs: [test, lint, package, gitleaks]
+    needs: [test, coverage, lint, package, binary, gitleaks]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed

@@ -120,7 +120,7 @@ def _wait_commit_loop(a, ref, conds) -> int:
                     print(f"cannot reach {c} ({dead}): {line}")
                     return EXIT_IMPOSSIBLE
             last_line = line
-        if time.time() > next_touch:  # a running wait keeps its commit watch from expiring
+        if time.time() >= next_touch:  # a running wait keeps its commit watch from expiring
             store.add_commit_watch(ref, by=caller(), keep=store.WAIT_KEEP)
             next_touch = time.time() + store.WAIT_RENEW
         if not store.daemon_healthy(max_age=max(300, 3 * store.daemon_state().get("interval", 60))):

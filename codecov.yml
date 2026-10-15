@@ -1,0 +1,10 @@
+# Coverage targets for the Rust code base (CI also gates at 85% of lines). The PR that replaced the Python package
+# compared against Python's numbers, so targets are explicit rather than relative to the base commit.
+coverage:
+  status:
+    project:
+      default:
+        target: 85%
+    patch:
+      default:
+        target: 80%

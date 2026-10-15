@@ -208,15 +208,16 @@ pub fn watches() -> Watches {
 }
 
 pub fn add_watch(r: &PrRef, by: &str) -> io::Result<()> {
-    let mut w = watches();
-    let now = now_i();
-    let e = w.entry(r.to_string()).or_insert(Watch { added_at: now, by: Some(by.into()), ..Default::default() });
-    e.last_asked = Some(now); // the daemon reads anything asked about since its last read
-    save_watches(&w)
+    with_watches(|w| {
+        let now = now_i();
+        let e = w.entry(r.to_string()).or_insert(Watch { added_at: now, by: Some(by.into()), ..Default::default() });
+        e.last_asked = Some(now); // the daemon reads anything asked about since its last read
+    })
 }
 
-pub fn save_watches(w: &Watches) -> io::Result<()> {
-    write_json(&home().join("watch.json"), w)
+/// Read, change and save watch.json under an inter-process lock, like `with_commit_watches`.
+pub fn with_watches<R>(f: impl FnOnce(&mut Watches) -> R) -> io::Result<R> {
+    locked("watch", f)
 }
 
 // ---- commits ----
@@ -265,10 +266,14 @@ pub const RELEASE_KEEP: i64 = 600;
 /// Read, change and save commit-watch.json under an inter-process lock, so concurrent waits, state reads and the
 /// daemon's pruning never write over each other's renewals.
 pub fn with_commit_watches<R>(f: impl FnOnce(&mut Watches) -> R) -> io::Result<R> {
-    let lock = OpenOptions::new().create(true).append(true).open(home().join("commit-watch.lock"))?;
+    locked("commit-watch", f)
+}
+
+fn locked<R>(name: &str, f: impl FnOnce(&mut Watches) -> R) -> io::Result<R> {
+    let lock = OpenOptions::new().create(true).append(true).open(home().join(format!("{name}.lock")))?;
     // SAFETY: flock on a descriptor we own; the lock is released when `lock` closes even if we panic.
     unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) };
-    let path = home().join("commit-watch.json");
+    let path = home().join(format!("{name}.json"));
     let mut w = read_watches(&path);
     let out = f(&mut w);
     let saved = write_json(&path, &w);

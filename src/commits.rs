@@ -445,6 +445,15 @@ pub fn env_hint(s: &CommitSummary, env: &str) -> Option<String> {
     ))
 }
 
+/// Whether a deploy status context (`deployed/production`, `production deploy`) is about exactly one of `forms`: its
+/// words other than the deploy word must be that environment and nothing else, so `deploy/preprod` is not about `prod`
+/// and `deploy/production-canary` is not about `production` (readiness fails closed).
+fn status_names_env(name: &str, forms: &[String]) -> bool {
+    let words: Vec<&str> =
+        name.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty() && !w.contains("deploy")).collect();
+    words.len() == 1 && forms.iter().any(|f| f == words[0])
+}
+
 /// (live in `env`, failure text or None). `env` "any" accepts every environment.
 pub fn deploy_state(s: &CommitSummary, env: &str) -> (bool, Option<String>) {
     let forms = alias_forms(env);
@@ -461,7 +470,7 @@ pub fn deploy_state(s: &CommitSummary, env: &str) -> (bool, Option<String>) {
     for x in &s.statuses {
         // e.g. a `deployed/production` commit status
         let name = x.name.clone().unwrap_or_default().to_lowercase();
-        if name.contains("deploy") && (env == "any" || forms.iter().any(|f| name.contains(f.as_str()))) {
+        if name.contains("deploy") && (env == "any" || status_names_env(&name, &forms)) {
             match x.state.as_deref() {
                 Some("SUCCESS") => return (true, None),
                 Some(st @ ("FAILURE" | "ERROR")) => {
@@ -991,6 +1000,13 @@ pub(crate) mod tests {
         assert_eq!(env_names(&both, "production"), vec!["production"]);
         assert!(env_names(&s, "qa").is_empty() && env_names(&s, "any") == vec!["prod", "stg"]);
         assert!(deploy_state(&sum(node(&[], &[("deployed/prod", "SUCCESS")], &[])), "production").0);
+        assert!(deploy_state(&sum(node(&[], &[("production deploy", "SUCCESS")], &[])), "production").0);
+        // another environment whose name merely contains this one never counts
+        for other in ["deploy/preprod", "deployed/prestage", "deploy/production-canary"] {
+            let s = sum(node(&[], &[(other, "SUCCESS")], &[]));
+            assert!(!deploy_state(&s, "production").0 && !deploy_state(&s, "staging").0, "{other}");
+            assert!(deploy_state(&s, "any").0);
+        }
     }
 
     #[test]

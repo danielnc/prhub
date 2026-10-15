@@ -124,7 +124,12 @@ impl Transport for Ureq {
 
 /// The token `gh` is logged in with.
 pub fn gh_token(timeout: u64) -> Result<String, GhError> {
-    match run_timeout("gh", &["auth", "token"], Duration::from_secs(timeout)) {
+    token_from(run_timeout("gh", &["auth", "token"], Duration::from_secs(timeout)), timeout)
+}
+
+/// What `gh auth token` answered, as a token or an error that says what to do.
+pub fn token_from(answer: Result<(i32, String), RunError>, timeout: u64) -> Result<String, GhError> {
+    match answer {
         Err(RunError::Timeout) => Err(GhError::transient(format!("`gh auth token` took longer than {timeout}s"))),
         Err(RunError::Spawn(e)) => Err(GhError::new(format!("cannot run gh: {e}"))),
         Ok((_, out)) if out.trim().is_empty() => Err(GhError::new("no GitHub token: run `gh auth login`")),
@@ -555,11 +560,12 @@ pub(crate) mod tests {
 
     #[test]
     fn tokens_come_from_gh() {
-        // gh may or may not be logged in on the test machine; either way the answer is a token or a clear error
-        match gh_token(10) {
-            Ok(t) => assert!(!t.is_empty()),
-            Err(e) => assert!(!e.msg.is_empty()),
-        }
+        assert_eq!(token_from(Ok((0, "tok123\n".into())), 30).unwrap(), "tok123");
+        assert!(token_from(Ok((1, "".into())), 30).unwrap_err().msg.contains("gh auth login"));
+        let slow = token_from(Err(RunError::Timeout), 30).unwrap_err();
+        assert!(slow.transient && slow.msg.contains("longer than 30s"));
+        let missing = token_from(Err(RunError::Spawn("No such file".into())), 30).unwrap_err();
+        assert!(!missing.transient && missing.msg.starts_with("cannot run gh"));
         assert_eq!(GhError::new("x").to_string(), "x");
     }
 }

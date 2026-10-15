@@ -401,11 +401,13 @@ fn watch(prs: &[String], cfg: &Config, io: &mut Io) -> Result<i32, String> {
 
 fn unwatch(prs: &[String], cfg: &Config) -> Result<i32, String> {
     let res = resolver(cfg);
-    let mut w = store::watches();
-    for p in prs {
-        w.remove(&res.resolve(p)?.to_string());
-    }
-    store::save_watches(&w).map_err(|e| e.to_string())?;
+    let keys = prs.iter().map(|p| res.resolve(p).map(|r| r.to_string())).collect::<Result<Vec<_>, _>>()?;
+    store::with_watches(|w| {
+        for k in &keys {
+            w.remove(k);
+        }
+    })
+    .map_err(|e| e.to_string())?;
     Ok(0)
 }
 
@@ -1002,7 +1004,6 @@ mod tests {
             plist.contains("<string>/x/prhub</string><string>daemon</string>")
                 && plist.contains("<string>/tmp/d.log</string>")
         );
-        std::env::remove_var("PRHUB_CALLER");
         assert!(!caller().is_empty());
     }
 

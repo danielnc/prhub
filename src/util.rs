@@ -105,12 +105,12 @@ pub fn parse_iso(s: &str) -> Option<i64> {
                 b'-' => -1,
                 _ => return None,
             };
-            let hhmm = rest[1..].replace(':', "");
-            if hhmm.len() != 4 {
+            let hhmm = rest.get(1..)?.replace(':', "");
+            if hhmm.len() != 4 || !hhmm.bytes().all(|b| b.is_ascii_digit()) {
                 return None;
             }
-            let oh: i64 = hhmm[..2].parse().ok()?;
-            let om: i64 = hhmm[2..].parse().ok()?;
+            let oh: i64 = hhmm.get(..2)?.parse().ok()?;
+            let om: i64 = hhmm.get(2..)?.parse().ok()?;
             sign * (oh * 3600 + om * 60)
         }
     };
@@ -265,6 +265,9 @@ mod tests {
         assert_eq!(parse_iso("garbage"), None);
         assert_eq!(parse_iso("2026-13-15T20:09:42Z"), None);
         assert_eq!(parse_iso("2026-10-15T20:09:42X"), None);
+        assert_eq!(parse_iso("2026-10-15T20:09:42+1é2"), None); // a non-ASCII offset is rejected, not a panic
+        assert_eq!(parse_iso("2026-10-15T20:09:42+"), None);
+        assert_eq!(parse_iso("2026-10-1é20:09:42Z"), None);
     }
 
     #[test]

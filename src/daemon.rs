@@ -212,6 +212,8 @@ impl Daemon {
                 if red && old.as_ref().is_none_or(|o| o.checks != s.checks || o.head != s.head) {
                     went_red.push(r.clone());
                 }
+            } else if red && rec.failing.is_empty() {
+                went_red.push(r.clone()); // red, but the names of its failing checks never arrived: ask again
             }
             if old.as_ref().is_some_and(|o| o.state.as_deref() == Some("OPEN")) && s.state.as_deref() != Some("OPEN") {
                 rec.closed_seen_at = Some(now as i64);
@@ -222,11 +224,18 @@ impl Daemon {
         }
         if !went_red.is_empty() {
             went_red.truncate(20);
-            for (r, failing) in self.api.fetch_failing(&went_red, &token)? {
-                if let Some(mut rec) = store::read_pr(&r) {
-                    rec.failing = failing;
-                    store::write_pr(&r, &rec)?;
+            // the names are a nicety on top of the state: a failed lookup is retried next poll, not a failed poll
+            match self.api.fetch_failing(&went_red, &token) {
+                Ok(found) => {
+                    for (r, failing) in found {
+                        if let Some(mut rec) = store::read_pr(&r) {
+                            rec.failing = failing;
+                            store::write_pr(&r, &rec)?;
+                        }
+                    }
                 }
+                Err(e) if e.rate_limited => return Err(e.into()),
+                Err(e) => log(&format!("failing checks not read this poll: {e}")),
             }
         }
         let skipped = want.len() - data.len();
@@ -381,21 +390,15 @@ impl Daemon {
     }
 
     pub fn prune(&mut self, now: f64) -> Result<(), PollError> {
-        let w = store::watches();
-        let keep: store::Watches = w
-            .iter()
-            .filter(|(k, _)| match refs::parse(k) {
+        store::with_watches(|w| {
+            w.retain(|k, _| match refs::parse(k) {
                 None => false,
                 Some(r) => {
                     let closed_at = store::read_pr(&r).and_then(|x| x.closed_seen_at);
                     !closed_at.is_some_and(|c| now - c as f64 > KEEP_CLOSED_WATCH)
                 }
             })
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        if keep != w {
-            store::save_watches(&keep)?;
-        }
+        })?;
         store::with_commit_watches(|cw| cw.retain(|_, v| !store::commit_watch_expired(v, now, KEEP_COMMIT_WATCH)))?;
         if let Ok(rd) = std::fs::read_dir(store::home().join("commits")) {
             for f in rd.flatten() {
@@ -450,6 +453,9 @@ impl Daemon {
                 };
                 for (k, v) in [
                     ("last_poll_ok", json!(st)),
+                    // the end of the last GOOD poll: a daemon that only fails (bad credentials, a full disk) must stop
+                    // looking healthy once that is old
+                    ("last_poll_done", json!(now_i())),
                     ("last_error", error),
                     ("tracked", json!(res.tracked)),
                     ("tracked_commits", json!(res.commits)),
@@ -516,7 +522,6 @@ impl Daemon {
             }
         };
         self.set("last_poll", json!(st));
-        self.set("last_poll_done", json!(now_i()));
         self.set("poll_seconds", json!((now() - started) as i64));
         self.set("polling_since", Value::Null);
         self.save_state();
@@ -580,6 +585,7 @@ mod tests {
         open: Vec<PrRef>,
         prs: HashMap<PrRef, Value>,
         failing: Vec<Failing>,
+        failing_error: Option<GhError>,
         commits: HashMap<CommitRef, Value>,
         /// commits GitHub fails on every time (left out of fetch_commits' answer)
         commit_errors: HashSet<CommitRef>,
@@ -626,6 +632,9 @@ mod tests {
         fn fetch_failing(&mut self, refs: &[PrRef], _t: &str) -> Result<Vec<(PrRef, Vec<Failing>)>, GhError> {
             let mut f = self.get();
             *f.calls.entry("failing").or_default() += 1;
+            if let Some(e) = f.failing_error.clone() {
+                return Err(e);
+            }
             Ok(refs.iter().map(|r| (r.clone(), f.failing.clone())).collect())
         }
         fn fetch_commits(&mut self, refs: &[CommitRef], _t: &str) -> Result<CommitBatch, GhError> {
@@ -744,6 +753,43 @@ mod tests {
         ok(&mut d); // still red at the same head: no second lookup
         assert_eq!(gh.calls("failing"), 1);
         assert_eq!(store::read_pr(&api_ref()).unwrap().failing[0].name, "test");
+    }
+
+    #[test]
+    fn failing_check_names_are_asked_again_until_they_arrive() {
+        let (_iso, gh, mut d) = setup();
+        gh.get().prs.insert(api_ref(), pr(Pr { checks: Some("FAILURE"), ..Default::default() }));
+        gh.get().failing_error = Some(GhError::transient("HTTP 502: bad gateway"));
+        ok(&mut d); // the lookup fails, the poll does not
+        assert!(store::read_pr(&api_ref()).unwrap().failing.is_empty());
+        gh.get().failing_error = None;
+        gh.get().failing = vec![Failing { name: "test".into(), ..Default::default() }];
+        ok(&mut d); // same state, but the names are still missing: asked again
+        assert_eq!(store::read_pr(&api_ref()).unwrap().failing[0].name, "test");
+        let calls = gh.calls("failing");
+        ok(&mut d);
+        assert_eq!(gh.calls("failing"), calls); // and not once they are known
+        gh.get().failing_error = Some(GhError { rate_limited: true, ..GhError::new("limit") });
+        gh.get().prs.insert(api_ref(), pr(Pr { checks: Some("ERROR"), head: "def456", ..Default::default() }));
+        assert!(matches!(d.poll(), Err(PollError::GitHub(e)) if e.rate_limited));
+    }
+
+    #[test]
+    fn a_daemon_that_only_fails_stops_looking_healthy() {
+        let (_iso, gh, mut d) = setup();
+        d.poll_once(60);
+        let done = store::daemon_state()["last_poll_done"].clone();
+        assert!(done.is_number());
+        gh.get().discover_error = Some(GhError::new("HTTP 401: Bad credentials"));
+        d.last_discover = 0.0;
+        d.poll_once(60);
+        assert_eq!(store::daemon_state()["last_poll_done"], done); // a failed poll is not a done poll
+        let mut s = store::daemon_state();
+        s.insert("last_poll_ok".into(), json!(now_i() - 5000));
+        s.insert("last_poll_done".into(), json!(now_i() - 5000));
+        store::write_json(&store::home().join("daemon.json"), &Value::Object(s)).unwrap();
+        d.poll_once(60);
+        assert!(!store::daemon_healthy(300.0));
     }
 
     #[test]

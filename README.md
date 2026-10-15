@@ -64,7 +64,7 @@ prhub status                                      # daemon health and the GitHub
 
 ## Install
 
-prhub is a single binary (Rust; about 5 MB of memory while it runs). It needs the [GitHub CLI](https://cli.github.com),
+prhub is a single binary, written in Rust. It needs the [GitHub CLI](https://cli.github.com),
 logged in (`gh auth login`): it reads the token from `gh auth token`, keeps it in memory only, and needs nothing else.
 
 ```sh

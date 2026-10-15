@@ -172,6 +172,18 @@ def test_wait_deployed_matches_a_short_environment_name_and_names_a_wrong_one(cl
     assert "environments seen: prod" in err and "environments seen: prod" in out
 
 
+
+def test_a_finished_wait_lets_its_commit_watch_lapse(clock, capsys):
+    healthy_daemon()
+    put_commit(at=clock.now, node=commit_node())
+    assert cli.main(["wait", "acme/api@abcdef1", "--until", "green"]) == cli.EXIT_MET
+    e = store.commit_watches()["acme/api@abcdef1"]
+    assert e["keep_until"] <= time.time() + store.RELEASE_KEEP + 1
+    put_commit(at=clock.now, node=commit_node(runs=[("CI", "IN_PROGRESS", None)]))
+    assert cli.main(["wait", "acme/api@abcdef1", "--until", "green", "--timeout", "4000"]) == cli.EXIT_TIMEOUT
+    assert store.commit_watches()["acme/api@abcdef1"]["keep_until"] <= time.time() + store.RELEASE_KEEP + 1
+
+
 def test_wait_commit_fails_fast_on_a_red_run(clock, capsys):
     healthy_daemon()
     put_commit(at=clock.now, node=commit_node(runs=[("CI", "COMPLETED", "FAILURE")]))

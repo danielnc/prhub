@@ -1,4 +1,5 @@
 import subprocess
+import time
 
 import pytest
 
@@ -77,3 +78,21 @@ def test_read_json_tolerates_missing_and_broken_files(tmp_path):
 def test_rate_limit_pause_expires():
     store.write_json(store.home() / "daemon.json", {"pid": 0, "rate_limited_until": 1})
     assert store.rate_limited_until() is None and not store.daemon_healthy()
+
+
+def test_commit_watch_lifetimes():
+    ref = CommitRef("acme", "api", "aaaaaaa")
+    now = time.time()
+    store.add_commit_watch(ref)  # a state read is a glance
+    e = store.commit_watches()[str(ref)]
+    assert now + store.STATE_KEEP - 2 <= e["keep_until"] <= now + store.STATE_KEEP + 2
+    assert not store.commit_watch_expired(e, now, 3600) and store.commit_watch_expired(e, e["keep_until"], 3600)
+    store.add_commit_watch(ref, keep=5000)  # a longer claim wins over a shorter one
+    store.add_commit_watch(ref)
+    assert store.commit_watches()[str(ref)]["keep_until"] >= now + 4990
+    store.release_commit_watch(ref)  # a wait ended: tracked a little longer, then dropped
+    assert store.commit_watches()[str(ref)]["keep_until"] <= time.time() + store.RELEASE_KEEP + 1
+    store.release_commit_watch(CommitRef("acme", "api", "bbbbbbb"))  # nothing to release
+    assert list(store.commit_watches()) == [str(ref)]
+    legacy = {"added_at": 100, "last_asked": 1000}  # written before keep_until existed
+    assert not store.commit_watch_expired(legacy, 1000 + 3599, 3600) and store.commit_watch_expired(legacy, 4600, 3600)

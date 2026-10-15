@@ -17,7 +17,10 @@ from .refs import PRRef, RefResolver
 NUDGE_MIN_GAP = 15          # an agent's `wait` can pull a poll forward, but not more often than this
 KEEP_CLOSED_WATCH = 3600    # a watched PR stays tracked this long after it closes
 KEEP_CLOSED_FILE = 7 * 86400
-KEEP_COMMIT_WATCH = 6 * 3600  # a commit stays tracked this long after the last state/wait that asked about it
+KEEP_COMMIT_WATCH = 3600  # deploy-run answers are kept this long; so are commit watches written before keep_until
+COMMIT_RETRY = 300  # a commit GitHub keeps failing on is skipped this long before trying again
+COMMITS_PER_POLL = 50  # most commits read in one poll (most urgent first), so a poll stays short however many are
+#                        watched; the rest are read on the next polls
 KEEP_COMMIT_FILE = 2 * 86400
 CLOSED_RECHECK = 600   # a merged/closed PR still being watched is re-read this often (it can be reopened)
 SETTLED_RECHECK = 300  # so is a commit whose runs have all finished (its deploy can still land later)
@@ -70,6 +73,7 @@ class Daemon:
         self.state.update({"pid": os.getpid(), "started": int(time.time())})
         self.token: str | None = None
         self.token_at = 0.0
+        self.commit_retry: dict[str, float] = {}  # commit -> when to try again after GitHub kept failing on it
 
     def get_token(self) -> str:
         if self.token and time.time() - self.token_at < TOKEN_TTL:
@@ -152,8 +156,12 @@ class Daemon:
                 "skipped": skipped + cskipped}
 
     def poll_commits(self, token: str, now: float) -> tuple[dict, int]:
-        refs = []
+        due = []
         for k, watch in store.commit_watches().items():
+            if store.commit_watch_expired(watch, now, KEEP_COMMIT_WATCH):
+                continue  # nobody has asked for a while; prune() drops it
+            if self.commit_retry.get(k, 0) > now:
+                continue  # GitHub kept failing on it: back off so it cannot crowd out the rest
             try:
                 ref = commits.resolve(k)
             except ValueError:
@@ -162,7 +170,12 @@ class Daemon:
             s = (rec or {}).get("summary")
             settled = bool(rec and (rec.get("missing") or (s and commits.rollup(s)[0] in ("SUCCESS", "FAILURE"))))
             if self.due(rec, watch, settled, SETTLED_RECHECK, now):
-                refs.append(ref)
+                fetched = (rec or {}).get("fetched_at", 0)
+                # never read or just asked about first, then commits still running, then the stalest finished ones
+                rank = 0 if not rec or watch.get("last_asked", 0) > fetched else 1 if not settled else 2
+                due.append((rank, fetched, ref))
+        due.sort(key=lambda d: (d[0], d[1]))
+        refs = [ref for _, _, ref in due[:COMMITS_PER_POLL]]
         if not refs:
             return {}, 0, 0
         data, rate = fetch_commits(refs, token)
@@ -183,6 +196,11 @@ class Daemon:
                 return status, concl
             return None
 
+        for ref in refs:
+            if ref in data:
+                self.commit_retry.pop(str(ref), None)
+            else:  # still failing after the batch was split and retried
+                self.commit_retry[str(ref)] = now + COMMIT_RETRY
         for ref, node in data.items():
             prev = store.read_commit(ref) or {}
             s = commits.summarize(node or {})
@@ -235,10 +253,9 @@ class Daemon:
                 keep[k] = v
         if keep != w:
             store.save_watches(keep)
-        cw = store.commit_watches()
-        keep_c = {k: v for k, v in cw.items() if now - v.get("last_asked", v.get("added_at", 0)) < KEEP_COMMIT_WATCH}
-        if keep_c != cw:
-            store.save_commit_watches(keep_c)
+        with store.commit_watches_locked() as cw:
+            for k in [k for k, v in cw.items() if store.commit_watch_expired(v, now, KEEP_COMMIT_WATCH)]:
+                del cw[k]
         for f in (store.home() / "commits").glob("*.json") if (store.home() / "commits").exists() else []:
             if now - f.stat().st_mtime > KEEP_COMMIT_FILE:
                 f.unlink(missing_ok=True)

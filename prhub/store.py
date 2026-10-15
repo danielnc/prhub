@@ -1,6 +1,8 @@
 """Local state shared by the daemon (writer) and every CLI call (readers). Plain JSON files, atomic writes."""
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import time
@@ -116,11 +118,48 @@ def commit_watches() -> dict[str, dict]:
     return read_json(home() / "commit-watch.json", {}) or {}
 
 
-def add_commit_watch(ref, by: str = "cli") -> None:
-    w = commit_watches()
-    w.setdefault(str(ref), {"added_at": int(time.time()), "by": by})
-    w[str(ref)]["last_asked"] = int(time.time())
-    write_json(home() / "commit-watch.json", w)
+# How long asking about a commit keeps the daemon reading it. A `state` read is a glance; a running `wait` renews its
+# claim every WAIT_RENEW, and when it ends the commit stays tracked RELEASE_KEEP more (for a follow-up `state`).
+STATE_KEEP = 900
+WAIT_KEEP = 900
+WAIT_RENEW = 300
+RELEASE_KEEP = 600
+
+
+@contextlib.contextmanager
+def commit_watches_locked():
+    """Read, change and save commit-watch.json under an inter-process lock, so concurrent waits, state reads and the
+    daemon's pruning never write over each other's renewals."""
+    with open(home() / "commit-watch.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            w = commit_watches()
+            yield w
+            write_json(home() / "commit-watch.json", w)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def add_commit_watch(ref, by: str = "cli", keep: int = STATE_KEEP) -> None:
+    with commit_watches_locked() as w:
+        now = int(time.time())
+        e = w.setdefault(str(ref), {"added_at": now, "by": by})
+        e["last_asked"] = now
+        e["keep_until"] = max(e.get("keep_until") or 0, now + keep)
+
+
+def release_commit_watch(ref) -> None:
+    """A `wait` on this commit ended: stop reading it soon, unless another `state` or `wait` renews it."""
+    with commit_watches_locked() as w:
+        e = w.get(str(ref))
+        if e is not None:
+            e["keep_until"] = min(e.get("keep_until") or 0, int(time.time()) + RELEASE_KEEP)
+
+
+def commit_watch_expired(e: dict, now: float, legacy_keep: int) -> bool:
+    """Watches written before `keep_until` existed expire `legacy_keep` after they were last asked about."""
+    until = e.get("keep_until") or (e.get("last_asked", e.get("added_at", 0)) + legacy_keep)
+    return now >= until
 
 
 def save_commit_watches(w: dict) -> None:

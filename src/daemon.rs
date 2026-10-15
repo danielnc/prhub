@@ -784,10 +784,9 @@ mod tests {
         d.last_discover = 0.0;
         d.poll_once(60);
         assert_eq!(store::daemon_state()["last_poll_done"], done); // a failed poll is not a done poll
-        let mut s = store::daemon_state();
-        s.insert("last_poll_ok".into(), json!(now_i() - 5000));
-        s.insert("last_poll_done".into(), json!(now_i() - 5000));
-        store::write_json(&store::home().join("daemon.json"), &Value::Object(s)).unwrap();
+                                                                   // the daemon keeps its state in memory and writes it each poll: age the last good poll there
+        d.state.insert("last_poll_ok".into(), json!(now_i() - 5000));
+        d.state.insert("last_poll_done".into(), json!(now_i() - 5000));
         d.poll_once(60);
         assert!(!store::daemon_healthy(300.0));
     }

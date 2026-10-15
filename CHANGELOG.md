@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-15
+
 ### Fixed
 
 - Polls no longer grow with every commit anyone ever asked about. A `state` or `wait` on a commit kept it tracked for

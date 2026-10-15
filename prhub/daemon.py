@@ -18,6 +18,7 @@ NUDGE_MIN_GAP = 15          # an agent's `wait` can pull a poll forward, but not
 KEEP_CLOSED_WATCH = 3600    # a watched PR stays tracked this long after it closes
 KEEP_CLOSED_FILE = 7 * 86400
 KEEP_COMMIT_WATCH = 3600  # deploy-run answers are kept this long; so are commit watches written before keep_until
+COMMIT_RETRY = 300  # a commit GitHub keeps failing on is skipped this long before trying again
 COMMITS_PER_POLL = 50  # most commits read in one poll (most urgent first), so a poll stays short however many are
 #                        watched; the rest are read on the next polls
 KEEP_COMMIT_FILE = 2 * 86400
@@ -72,6 +73,7 @@ class Daemon:
         self.state.update({"pid": os.getpid(), "started": int(time.time())})
         self.token: str | None = None
         self.token_at = 0.0
+        self.commit_retry: dict[str, float] = {}  # commit -> when to try again after GitHub kept failing on it
 
     def get_token(self) -> str:
         if self.token and time.time() - self.token_at < TOKEN_TTL:
@@ -158,6 +160,8 @@ class Daemon:
         for k, watch in store.commit_watches().items():
             if store.commit_watch_expired(watch, now, KEEP_COMMIT_WATCH):
                 continue  # nobody has asked for a while; prune() drops it
+            if self.commit_retry.get(k, 0) > now:
+                continue  # GitHub kept failing on it: back off so it cannot crowd out the rest
             try:
                 ref = commits.resolve(k)
             except ValueError:
@@ -192,6 +196,11 @@ class Daemon:
                 return status, concl
             return None
 
+        for ref in refs:
+            if ref in data:
+                self.commit_retry.pop(str(ref), None)
+            else:  # still failing after the batch was split and retried
+                self.commit_retry[str(ref)] = now + COMMIT_RETRY
         for ref, node in data.items():
             prev = store.read_commit(ref) or {}
             s = commits.summarize(node or {})
@@ -244,10 +253,9 @@ class Daemon:
                 keep[k] = v
         if keep != w:
             store.save_watches(keep)
-        cw = store.commit_watches()
-        keep_c = {k: v for k, v in cw.items() if not store.commit_watch_expired(v, now, KEEP_COMMIT_WATCH)}
-        if keep_c != cw:
-            store.save_commit_watches(keep_c)
+        with store.commit_watches_locked() as cw:
+            for k in [k for k, v in cw.items() if store.commit_watch_expired(v, now, KEEP_COMMIT_WATCH)]:
+                del cw[k]
         for f in (store.home() / "commits").glob("*.json") if (store.home() / "commits").exists() else []:
             if now - f.stat().st_mtime > KEEP_COMMIT_FILE:
                 f.unlink(missing_ok=True)

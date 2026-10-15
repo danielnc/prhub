@@ -13,7 +13,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   made every fifth-minute poll read about 190 commits and take 7 to 13 minutes, and waits went that long without fresh
   data. Now a `state` keeps a commit tracked for 15 minutes, a running `wait` renews its claim every 5 minutes and
   lets it lapse 10 minutes after it ends, and a poll reads at most 50 commits: those never read or just asked about
-  first, then those still running, then the stalest finished ones.
+  first, then those still running, then the stalest finished ones. Watches written by an older prhub expire an hour
+  after they were last asked about, instead of six. Updates to `commit-watch.json` take a lock, and a commit GitHub
+  keeps failing on is skipped for 5 minutes so it cannot crowd out the rest.
 
 ## [0.1.5] - 2026-10-14
 

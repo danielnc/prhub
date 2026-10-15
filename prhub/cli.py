@@ -126,7 +126,7 @@ def _wait_commit_loop(a, ref, conds) -> int:
         if not store.daemon_healthy(max_age=max(300, 3 * store.daemon_state().get("interval", 60))):
             print("prhub daemon stopped polling while waiting", file=sys.stderr)
             return EXIT_NO_DAEMON
-        time.sleep(a.poll)
+        time.sleep(min(a.poll, max(0.0, next_touch - time.time())))  # renew in time
     print("timeout: " + (last_line or f"{ref}: no fresh data") + (f"  ({hint})" if hint else ""))
     return EXIT_TIMEOUT
 

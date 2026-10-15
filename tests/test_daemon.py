@@ -243,6 +243,29 @@ def test_a_poll_reads_at_most_its_share_of_commits_most_urgent_first(gh, monkeyp
     assert read[-1][0] == many[-1] and len(read[-1]) == COMMITS_PER_POLL
 
 
+
+def test_a_commit_github_keeps_failing_on_backs_off(gh, monkeypatch):
+    read = []
+
+    def fetch(refs, token):  # GitHub fails on the first commit every time, even after the batch was split
+        read.append([str(r) for r in refs])
+        return {r: commit_node(OID) for r in refs[1:]}, gh.rate
+    monkeypatch.setattr(daemon, "fetch_commits", fetch)
+    bad, good = CommitRef("acme", "api", "aaaaaaa"), CommitRef("acme", "api", "bbbbbbb")
+    store.add_commit_watch(bad)
+    store.add_commit_watch(good)
+    d = Daemon()
+    d.poll()
+    assert read[-1] == [str(bad), str(good)]
+    due_again(good)
+    d.poll()
+    assert read[-1] == [str(good)]  # the failing one waits out COMMIT_RETRY
+    d.commit_retry[str(bad)] = 0
+    due_again(good)
+    d.poll()
+    assert str(bad) in read[-1]
+
+
 def test_an_expired_commit_watch_is_not_read(gh):
     ref = CommitRef("acme", "api", "aaaaaaa")
     store.add_commit_watch(ref)

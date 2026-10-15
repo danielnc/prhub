@@ -6,6 +6,8 @@ name: Publish
 on:
   push:
     tags: ["v*"]
+  # A dry run: builds and smoke-tests every wheel and binary, publishes nothing.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,6 +25,7 @@ jobs:
           persist-credentials: false
 
       - name: The tag matches the version in Cargo.toml
+        if: github.event_name == 'push'
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -82,7 +85,7 @@ jobs:
 
       - name: The standalone binary is the one in the wheel
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event_name == 'push' && github.ref_name || 'dry-run' }}
           NAME: ${{ matrix.name }}
         run: |
           mkdir -p bin stage
@@ -134,6 +137,7 @@ jobs:
 
   hashes:
     name: Hash everything for the provenance
+    if: github.event_name == 'push'
     needs: [build, sdist]
     runs-on: ubuntu-latest
     outputs:
@@ -158,6 +162,7 @@ jobs:
   provenance:
     name: SLSA provenance
     needs: hashes
+    if: github.event_name == 'push'
     permissions:
       actions: read # read the workflow run that built the artifacts
       id-token: write # sign the provenance with Sigstore
@@ -171,6 +176,7 @@ jobs:
 
   release-assets:
     name: Attach the binaries, wheels and sdist to the GitHub release
+    if: github.event_name == 'push'
     needs: [build, sdist, provenance]
     runs-on: ubuntu-latest
     permissions:
@@ -195,6 +201,7 @@ jobs:
 
   publish:
     name: Publish to PyPI
+    if: github.event_name == 'push'
     # Only after the provenance and the release assets are on GitHub: a PyPI version must never exist without them.
     needs: [build, sdist, provenance, release-assets]
     runs-on: ubuntu-latest

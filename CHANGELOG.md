@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-15
+
 ### Changed
 
 - prhub is now a single Rust binary instead of a Python package. Commands, options, conditions, exit codes, output

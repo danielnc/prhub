@@ -84,13 +84,20 @@ def cmd_wait_commit(a, cfg) -> int:
         print("prhub daemon is not polling (see `prhub status`); start it with `prhub install-launchd` (macOS) or `prhub install-systemd` (Linux)",
               file=sys.stderr)
         return EXIT_NO_DAEMON
-    store.add_commit_watch(ref, by=caller())
+    store.add_commit_watch(ref, by=caller(), keep=store.WAIT_KEEP)
     store.nudge()
+    try:
+        return _wait_commit_loop(a, ref, conds)
+    finally:
+        store.release_commit_watch(ref)
+
+
+def _wait_commit_loop(a, ref, conds) -> int:
     start = time.time()
     baseline = None
     last_line = None
     hint = None
-    next_touch = start + 1800
+    next_touch = start + store.WAIT_RENEW
     while time.time() < start + a.timeout:
         rec = store.read_commit(ref)
         if rec and rec["fetched_at"] >= start - 1:
@@ -113,9 +120,9 @@ def cmd_wait_commit(a, cfg) -> int:
                     print(f"cannot reach {c} ({dead}): {line}")
                     return EXIT_IMPOSSIBLE
             last_line = line
-        if time.time() > next_touch:  # a long wait keeps its commit watch from expiring
-            store.add_commit_watch(ref)
-            next_touch = time.time() + 1800
+        if time.time() > next_touch:  # a running wait keeps its commit watch from expiring
+            store.add_commit_watch(ref, by=caller(), keep=store.WAIT_KEEP)
+            next_touch = time.time() + store.WAIT_RENEW
         if not store.daemon_healthy(max_age=max(300, 3 * store.daemon_state().get("interval", 60))):
             print("prhub daemon stopped polling while waiting", file=sys.stderr)
             return EXIT_NO_DAEMON

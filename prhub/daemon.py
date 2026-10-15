@@ -17,7 +17,9 @@ from .refs import PRRef, RefResolver
 NUDGE_MIN_GAP = 15          # an agent's `wait` can pull a poll forward, but not more often than this
 KEEP_CLOSED_WATCH = 3600    # a watched PR stays tracked this long after it closes
 KEEP_CLOSED_FILE = 7 * 86400
-KEEP_COMMIT_WATCH = 6 * 3600  # a commit stays tracked this long after the last state/wait that asked about it
+KEEP_COMMIT_WATCH = 3600  # deploy-run answers are kept this long; so are commit watches written before keep_until
+COMMITS_PER_POLL = 50  # most commits read in one poll (most urgent first), so a poll stays short however many are
+#                        watched; the rest are read on the next polls
 KEEP_COMMIT_FILE = 2 * 86400
 CLOSED_RECHECK = 600   # a merged/closed PR still being watched is re-read this often (it can be reopened)
 SETTLED_RECHECK = 300  # so is a commit whose runs have all finished (its deploy can still land later)
@@ -152,8 +154,10 @@ class Daemon:
                 "skipped": skipped + cskipped}
 
     def poll_commits(self, token: str, now: float) -> tuple[dict, int]:
-        refs = []
+        due = []
         for k, watch in store.commit_watches().items():
+            if store.commit_watch_expired(watch, now, KEEP_COMMIT_WATCH):
+                continue  # nobody has asked for a while; prune() drops it
             try:
                 ref = commits.resolve(k)
             except ValueError:
@@ -162,7 +166,12 @@ class Daemon:
             s = (rec or {}).get("summary")
             settled = bool(rec and (rec.get("missing") or (s and commits.rollup(s)[0] in ("SUCCESS", "FAILURE"))))
             if self.due(rec, watch, settled, SETTLED_RECHECK, now):
-                refs.append(ref)
+                fetched = (rec or {}).get("fetched_at", 0)
+                # never read or just asked about first, then commits still running, then the stalest finished ones
+                rank = 0 if not rec or watch.get("last_asked", 0) > fetched else 1 if not settled else 2
+                due.append((rank, fetched, ref))
+        due.sort(key=lambda d: (d[0], d[1]))
+        refs = [ref for _, _, ref in due[:COMMITS_PER_POLL]]
         if not refs:
             return {}, 0, 0
         data, rate = fetch_commits(refs, token)
@@ -236,7 +245,7 @@ class Daemon:
         if keep != w:
             store.save_watches(keep)
         cw = store.commit_watches()
-        keep_c = {k: v for k, v in cw.items() if now - v.get("last_asked", v.get("added_at", 0)) < KEEP_COMMIT_WATCH}
+        keep_c = {k: v for k, v in cw.items() if not store.commit_watch_expired(v, now, KEEP_COMMIT_WATCH)}
         if keep_c != cw:
             store.save_commit_watches(keep_c)
         for f in (store.home() / "commits").glob("*.json") if (store.home() / "commits").exists() else []:

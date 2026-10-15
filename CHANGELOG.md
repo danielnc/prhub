@@ -5,6 +5,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Polls no longer grow with every commit anyone ever asked about. A `state` or `wait` on a commit kept it tracked for
+  6 hours, and each finished commit was re-read every 5 minutes, so watches piled up and came due together: seen on
+  the maintainer's machine 15/10 with about 60 open PRs, 198 watched commits (170 not asked about for over an hour)
+  made every fifth-minute poll read about 190 commits and take 7 to 13 minutes, and waits went that long without fresh
+  data. Now a `state` keeps a commit tracked for 15 minutes, a running `wait` renews its claim every 5 minutes and
+  lets it lapse 10 minutes after it ends, and a poll reads at most 50 commits: those never read or just asked about
+  first, then those still running, then the stalest finished ones.
+
 ## [0.1.5] - 2026-10-14
 
 ### Fixed

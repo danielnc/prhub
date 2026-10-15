@@ -7,7 +7,7 @@ from fakes import commit_node, pr_node
 
 from prhub import daemon, store
 from prhub.commits import CommitRef
-from prhub.daemon import KEEP_COMMIT_WATCH, RUN_RECHECK, Daemon, seconds_until
+from prhub.daemon import COMMITS_PER_POLL, KEEP_COMMIT_WATCH, RUN_RECHECK, Daemon, seconds_until
 from prhub.github import GitHubError
 from prhub.refs import PRRef
 
@@ -217,6 +217,43 @@ def test_a_malformed_runs_file_is_ignored_and_rewritten(gh, junk):
     assert list(runs_seen()) == ["acme/api#9"]
 
 
+
+def test_a_poll_reads_at_most_its_share_of_commits_most_urgent_first(gh, monkeypatch):
+    read = []
+
+    def fetch(refs, token):
+        read.append(list(refs))
+        return {r: commit_node("%040x" % i) for i, r in enumerate(refs)}, gh.rate
+    monkeypatch.setattr(daemon, "fetch_commits", fetch)
+    many = [CommitRef("acme", "api", "%07x" % (0x1000000 + i)) for i in range(COMMITS_PER_POLL + 5)]
+    for ref in many:
+        store.add_commit_watch(ref)
+    d = Daemon()
+    d.poll()
+    assert len(read[-1]) == COMMITS_PER_POLL
+    d.poll()  # the rest next poll; the ones just read are finished and not due yet
+    assert len(read[-1]) == 5 and not set(map(str, read[-1])) & set(map(str, read[0]))
+    w = store.commit_watches()
+    for ref in many:  # all finished and due again, nobody asking
+        due_again(ref)
+        w[str(ref)]["last_asked"] -= 2000
+    store.save_commit_watches(w)
+    store.add_commit_watch(many[-1])  # just asked about: read before the stale ones
+    d.poll()
+    assert read[-1][0] == many[-1] and len(read[-1]) == COMMITS_PER_POLL
+
+
+def test_an_expired_commit_watch_is_not_read(gh):
+    ref = CommitRef("acme", "api", "aaaaaaa")
+    store.add_commit_watch(ref)
+    w = store.commit_watches()
+    w[str(ref)]["keep_until"] = int(time.time()) - 1
+    store.save_commit_watches(w)
+    gh.commits[ref] = commit_node(OID)
+    Daemon().poll()
+    assert gh.calls["commits"] == 0 and store.read_commit(ref) is None
+
+
 def test_commits_contained_by_one_deploy_run_ask_it_once_per_poll(gh):
     refs = [CommitRef("acme", "api", c * 7) for c in "ac"]
     for ref, oid in zip(refs, ("a" * 40, "c" * 40), strict=True):
@@ -275,6 +312,7 @@ def test_prune_drops_old_closed_watches_files_and_idle_commits(gh):
     store.add_commit_watch(old)
     w = store.commit_watches()
     w[str(old)]["last_asked"] = int(now - 7 * 3600)
+    w[str(old)]["keep_until"] = int(now - 1)
     store.save_commit_watches(w)
     stale = store.commit_path(CommitRef("acme", "api", "bbbbbbb"))
     stale.write_text("{}")

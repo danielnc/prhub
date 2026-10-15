@@ -138,7 +138,9 @@ It works the same whatever a repository's workflow names, default branch or rele
   repository records no Deployments, use
   `--until green --workflow <name of its deploy workflow>`.
 
-A commit stays tracked for 6 hours after the last `state` or `wait` that asked about it.
+A commit is read while someone asks about it: 15 minutes after a `state`, and for as long as a `wait` runs plus 10
+minutes after it ends. A poll reads at most 50 commits, those just asked about and those still running first, so a
+poll stays short however many commits are watched.
 
 ## Naming things
 

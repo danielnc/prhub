@@ -1,6 +1,8 @@
 #!/bin/bash -eu
-# Build every fuzz/fuzz_*.py target into a standalone fuzzer (compile_python_fuzzer comes with the base image).
-pip3 install .
-for fuzzer in "$SRC"/prhub/fuzz/fuzz_*.py; do
-  compile_python_fuzzer "$fuzzer"
+# Build every fuzz/fuzz_targets/*.rs target with cargo-fuzz (it comes with the base image) and hand them to the runner.
+cd "$SRC/prhub"
+cargo fuzz build -O
+for target in fuzz/fuzz_targets/*.rs; do
+  name=$(basename "$target" .rs)
+  cp "fuzz/target/x86_64-unknown-linux-gnu/release/$name" "$OUT/"
 done

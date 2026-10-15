@@ -1,7 +1,7 @@
-# Publishes prhub to PyPI when a v* tag is pushed, using PyPI Trusted Publishing (OIDC): there is no API token in
-# this repository. It also attaches the wheel, the sdist and their SLSA build provenance (prhub.intoto.jsonl) to the
-# GitHub release for the tag. One-time setup and the release steps: docs/releasing.md.
-name: Publish to PyPI
+# Publishes prhub when a v* tag is pushed: wheels and an sdist to PyPI (Trusted Publishing, OIDC: no API token in this
+# repository), plus standalone binaries, the wheels, the sdist and their SLSA build provenance (prhub.intoto.jsonl) on
+# the GitHub release for the tag. One-time setup and the release steps: docs/releasing.md.
+name: Publish
 
 on:
   push:
@@ -10,12 +10,109 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
-    name: Check, build, and smoke-test
+  check:
+    name: Check the version and test
     runs-on: ubuntu-latest
-    outputs:
-      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The tag matches the version in Cargo.toml
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy && rustup default stable
+
+      - name: Lint and test
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { name: linux-aarch64, os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { name: macos-universal, os: macos-latest, target: universal2-apple-darwin }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install stable --profile minimal && rustup default stable
+          if [ "$TARGET" = universal2-apple-darwin ]; then
+            rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          fi
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: false
+
+      - name: Build the wheel
+        # Linux wheels target glibc 2.17 (manylinux2014) through zig, so they install on old distributions too.
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            uvx --from "maturin[zig]>=1.9,<2" maturin build --release --locked --zig --compatibility manylinux2014 --target "$TARGET" --out dist
+          else
+            uvx --from "maturin>=1.9,<2" maturin build --release --locked --target "$TARGET" --out dist
+          fi
+
+      - name: The standalone binary is the one in the wheel
+        env:
+          TAG: ${{ github.ref_name }}
+          NAME: ${{ matrix.name }}
+        run: |
+          mkdir -p bin stage
+          unzip -o -j dist/*.whl '*.data/scripts/prhub' -d stage
+          chmod +x stage/prhub
+          stage/prhub --version
+          cp LICENSE README.md stage/
+          tar -czf "bin/prhub-${TAG}-${NAME}.tar.gz" -C stage .
+
+      - name: Smoke-test the wheel in a clean venv
+        working-directory: ${{ runner.temp }}
+        env:
+          DIST: ${{ github.workspace }}/dist
+        run: |
+          uv venv smoke
+          uv pip install --python smoke/bin/python "$DIST"/*.whl
+          smoke/bin/prhub --version
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-${{ matrix.name }}
+          path: |
+            dist/
+            bin/
+          if-no-files-found: error
+
+  sdist:
+    name: Build the sdist
+    needs: check
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -25,49 +122,36 @@ jobs:
         with:
           enable-cache: false
 
-      - name: The tag matches prhub.__version__
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          version=$(python3 -c 'import prhub; print(prhub.__version__)')
-          if [ "$TAG" != "v$version" ]; then
-            echo "::error::tag $TAG does not match prhub.__version__ $version"
-            exit 1
-          fi
-
-      - name: Lint and test
-        run: |
-          uv sync --locked
-          uv run ruff check .
-          uv run pytest -q
-
-      - name: Build
-        run: uv build
-
-      - name: Smoke-test the wheel in a clean venv
-        # Run outside the checkout so the import can only come from the installed wheel.
-        working-directory: ${{ runner.temp }}
-        env:
-          DIST: ${{ github.workspace }}/dist
-        run: |
-          uv venv smoke
-          uv pip install --python smoke/bin/python "$DIST"/*.whl
-          smoke/bin/prhub --version
-
-      - name: Hash the wheel and sdist for the provenance
-        id: hash
-        working-directory: dist
-        run: echo "hashes=$(sha256sum -- * | base64 -w0)" >> "$GITHUB_OUTPUT"
+      - name: sdist
+        run: uvx --from "maturin>=1.9,<2" maturin sdist --out dist
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: dist
+          name: build-sdist
           path: dist/
           if-no-files-found: error
 
+  hashes:
+    name: Hash everything for the provenance
+    needs: [build, sdist]
+    runs-on: ubuntu-latest
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: build-*
+          path: out
+          merge-multiple: true
+
+      - name: Hash
+        id: hash
+        working-directory: out
+        run: echo "hashes=$( (cd dist && sha256sum -- *; cd ../bin && sha256sum -- *) | base64 -w0)" >> "$GITHUB_OUTPUT"
+
   provenance:
     name: SLSA provenance
-    needs: build
+    needs: hashes
     permissions:
       actions: read # read the workflow run that built the artifacts
       id-token: write # sign the provenance with Sigstore
@@ -75,32 +159,33 @@ jobs:
     # The SLSA generator must be referenced by tag, not by commit SHA: its verifier checks the tag.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
-      base64-subjects: ${{ needs.build.outputs.hashes }}
+      base64-subjects: ${{ needs.hashes.outputs.hashes }}
       provenance-name: prhub.intoto.jsonl
       upload-assets: true
 
   release-assets:
-    name: Attach the wheel and sdist to the GitHub release
-    needs: [build, provenance]
+    name: Attach the binaries, wheels and sdist to the GitHub release
+    needs: [build, sdist, provenance]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: dist
-          path: dist/
+          pattern: build-*
+          path: out
+          merge-multiple: true
 
       - name: Upload
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$TAG" out/dist/* out/bin/* --clobber --repo "$GITHUB_REPOSITORY"
 
   publish:
     name: Publish to PyPI
     # Only after the provenance and the release assets are on GitHub: a PyPI version must never exist without them.
-    needs: [build, provenance, release-assets]
+    needs: [build, sdist, provenance, release-assets]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -110,7 +195,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: dist
-          path: dist/
+          pattern: build-*
+          path: out
+          merge-multiple: true
+
+      - name: Only wheels and the sdist go to PyPI
+        run: mkdir dist && mv out/dist/* dist/ && ls dist
 
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

@@ -7,12 +7,12 @@ updates:
     groups:
       actions:
         patterns: ["*"]
-  - package-ecosystem: uv
+  - package-ecosystem: cargo
     directory: /
     schedule:
       interval: monthly
     groups:
-      dev-tools:
+      crates:
         patterns: ["*"]
   - package-ecosystem: docker
     directory: /.clusterfuzzlite

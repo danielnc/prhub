@@ -1,8 +1,8 @@
-__pycache__/
-*.pyc
-.venv/
+/target/
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/
 dist/
-.pytest_cache/
-.coverage
-coverage.xml
-.ruff_cache/
+.venv/
+lcov.info

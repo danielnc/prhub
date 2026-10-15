@@ -5,7 +5,6 @@
 [![CI](https://github.com/danielnc/prhub/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/danielnc/prhub/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/danielnc/prhub/badge)](https://scorecard.dev/viewer/?uri=github.com/danielnc/prhub)
 [![PyPI](https://img.shields.io/pypi/v/prhub)](https://pypi.org/project/prhub/)
-[![Python versions](https://img.shields.io/pypi/pyversions/prhub)](https://pypi.org/project/prhub/)
 [![Codecov](https://codecov.io/gh/danielnc/prhub/graph/badge.svg)](https://codecov.io/gh/danielnc/prhub)
 [![CodeRabbit reviews](https://img.shields.io/coderabbit/prs/github/danielnc/prhub?label=CodeRabbit%20reviews)](https://coderabbit.ai)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -65,15 +64,19 @@ prhub status                                      # daemon health and the GitHub
 
 ## Install
 
-Requires Python 3.11+ and the [GitHub CLI](https://cli.github.com), logged in (`gh auth login`). prhub reads the
-token from `gh auth token` on every poll, never stores it, and has no other dependencies.
+prhub is a single binary (Rust; about 5 MB of memory while it runs). It needs the [GitHub CLI](https://cli.github.com),
+logged in (`gh auth login`): it reads the token from `gh auth token`, keeps it in memory only, and needs nothing else.
 
 ```sh
-uv tool install prhub            # or: pipx install prhub
+uv tool install prhub            # prebuilt for macOS and Linux; or: pipx install prhub
 prhub install-launchd            # macOS: run the daemon at login
 prhub install-systemd            # Linux: run it as a systemd user service
 prhub status                     # "daemon: healthy" within a minute
 ```
+
+Without Python: download `prhub-<version>-<platform>.tar.gz` from the
+[releases](https://github.com/danielnc/prhub/releases) (each release carries SLSA provenance, `prhub.intoto.jsonl`),
+or build it with `cargo install --git https://github.com/danielnc/prhub --locked`.
 
 To try it without installing a service, run `prhub daemon` in a terminal. Uninstall: on macOS,
 `launchctl bootout gui/$(id -u)/dev.prhub.daemon` and delete `~/Library/LaunchAgents/dev.prhub.daemon.plist`; on
@@ -215,7 +218,7 @@ Everything lives in `~/.local/state/prhub` (override with `PRHUB_HOME`):
 | `prs/<owner>__<repo>__<n>.json` | one record per PR: a summary plus the raw GraphQL fields |
 | `commits/<owner>__<repo>__<sha>.json` | one record per watched commit |
 | `watch.json`, `commit-watch.json` | what agents asked to track, and who asked (`PRHUB_CALLER`, else a tmux or Herdr pane id) |
-| `events.jsonl` | every state change, one JSON line each |
+| `events.jsonl` | every state change, one JSON line each; past 20 MB it moves to `events.jsonl.1` |
 | `runs.json` | deploy runs of later commits already asked about, shared by every commit they may contain |
 | `daemon.json`, `daemon.log` | daemon health, the GitHub budget left, and the log |
 

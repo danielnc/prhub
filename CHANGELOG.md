@@ -5,6 +5,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- prhub is now a single Rust binary instead of a Python package. Commands, options, conditions, exit codes, output
+  lines and state files are the same, so agents, scripts and an existing `~/.local/state/prhub` keep working; the
+  daemon picks up where the Python one left off. It uses about a fifth of the memory, and the Claude Code hook, which
+  runs before every Bash command, starts in a few milliseconds instead of about 60. `uv tool install prhub` and
+  `pipx install prhub` install a prebuilt binary wheel for macOS and Linux (x86_64 and aarch64), and every release
+  also carries standalone binaries with SLSA provenance.
+- `events.jsonl` no longer grows without bound: past 20 MB it moves to `events.jsonl.1`.
+
+
 ## [0.1.6] - 2026-10-15
 
 ### Fixed

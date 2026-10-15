@@ -1,10 +1,10 @@
 # Fuzzing with ClusterFuzzLite: the code a pull request changes for 5 minutes, and everything weekly for 10 minutes.
-# The targets live in fuzz/, the build in .clusterfuzzlite/.
+# The cargo-fuzz targets live in fuzz/, the build in .clusterfuzzlite/.
 name: ClusterFuzzLite
 
 on:
   pull_request:
-    paths: ["prhub/**", "fuzz/**", ".clusterfuzzlite/**", ".github/workflows/cflite.yml"]
+    paths: ["src/**", "Cargo.*", "fuzz/**", ".clusterfuzzlite/**", ".github/workflows/cflite.yml"]
   schedule:
     - cron: "43 3 * * 0" # Sundays 03:43 UTC
   workflow_dispatch:
@@ -19,13 +19,13 @@ concurrency:
 
 jobs:
   fuzz:
-    name: fuzz (python)
+    name: fuzz (rust)
     runs-on: ubuntu-latest
     steps:
       - name: Build the fuzzers
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
-          language: python
+          language: rust
           sanitizer: address
           github-token: ${{ secrets.GITHUB_TOKEN }}
 

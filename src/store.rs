@@ -123,6 +123,8 @@ fn read_as<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
 
 // ---- pull requests ----
 
+/// One PR as the daemon last read it. Records written before 0.2.1 also carry the raw GraphQL fields (`pr`); they are
+/// skipped when read and no longer written, which keeps each file a few hundred bytes.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct PrRecord {
@@ -131,7 +133,6 @@ pub struct PrRecord {
     #[serde(deserialize_with = "de_i64")]
     pub fetched_at: i64,
     pub summary: Summary,
-    pub pr: Value,
     pub failing: Vec<Failing>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_opt_i64")]
     pub closed_seen_at: Option<i64>,
@@ -149,39 +150,21 @@ pub fn write_pr(r: &PrRef, rec: &PrRecord) -> io::Result<()> {
     write_json(&pr_path(r), rec)
 }
 
-pub fn all_prs() -> Vec<PrRecord> {
+fn pr_files() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = fs::read_dir(home().join("prs"))
         .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect())
         .unwrap_or_default();
     paths.sort();
     paths
-        .iter()
-        .filter_map(|p| read_as::<PrListed>(p))
-        .filter(|r| !r.r.is_empty())
-        .map(|r| PrRecord {
-            r: r.r,
-            fetched_at: r.fetched_at,
-            summary: r.summary,
-            pr: Value::Null,
-            failing: r.failing,
-            closed_seen_at: r.closed_seen_at,
-        })
-        .collect()
 }
 
-/// A PR record without the raw GraphQL fields: reading every record at once (listing, discovery, pruning) then skips
-/// the bulk of each file instead of building it in memory.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct PrListed {
-    #[serde(rename = "ref")]
-    r: String,
-    #[serde(deserialize_with = "de_i64")]
-    fetched_at: i64,
-    summary: Summary,
-    failing: Vec<Failing>,
-    #[serde(deserialize_with = "de_opt_i64")]
-    closed_seen_at: Option<i64>,
+pub fn all_prs() -> Vec<PrRecord> {
+    pr_files().iter().filter_map(|p| read_as::<PrRecord>(p)).filter(|r| !r.r.is_empty()).collect()
+}
+
+/// How many PR records there are, without reading them (`prhub status`).
+pub fn pr_file_count() -> usize {
+    pr_files().len()
 }
 
 /// Something an agent asked about: who, when, and (commits) how long to keep reading it.
@@ -535,10 +518,17 @@ mod tests {
         fs::write(pr_path(&r), r#"{"ref": "acme/api#3", "fetched_at": 12.0, "summary": {"state": "OPEN"}}"#).unwrap();
         let rec = read_pr(&r).unwrap();
         assert_eq!((rec.fetched_at, rec.summary.state.as_deref()), (12, Some("OPEN")));
-        write_pr(&r, &PrRecord { pr: json!({"number": 3}), ..rec }).unwrap();
-        assert!(read_pr(&r).unwrap().pr["number"] == 3);
+        // a record from before 0.2.1 still carries the raw GraphQL fields: read fine, and not written back
+        fs::write(
+            pr_path(&r),
+            r#"{"ref": "acme/api#3", "fetched_at": 12, "summary": {"state": "OPEN"}, "pr": {"number": 3}}"#,
+        )
+        .unwrap();
+        let old = read_pr(&r).unwrap();
+        write_pr(&r, &old).unwrap();
+        assert!(!fs::read_to_string(pr_path(&r)).unwrap().contains("\"pr\""));
         let listed = all_prs();
-        assert!(listed.len() == 1 && listed[0].pr.is_null() && listed[0].summary.state.as_deref() == Some("OPEN"));
+        assert!(listed.len() == 1 && listed[0].summary.state.as_deref() == Some("OPEN") && pr_file_count() == 1);
         let c = CommitRef::new("acme", "api", "abcdef1");
         write_commit(&c, &CommitRecord { r: c.to_string(), fetched_at: 5, missing: true, ..Default::default() })
             .unwrap();

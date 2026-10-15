@@ -54,6 +54,9 @@ jobs:
           - { name: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { name: linux-aarch64, os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
           - { name: macos-universal, os: macos-latest, target: universal2-apple-darwin }
+          # Thin builds, half the size of the universal one: installers prefer them on their own architecture.
+          - { name: macos-arm64, os: macos-latest, target: aarch64-apple-darwin }
+          - { name: macos-x86_64, os: macos-latest, target: x86_64-apple-darwin, cross: true }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,6 +69,8 @@ jobs:
           rustup toolchain install stable --profile minimal && rustup default stable
           if [ "$TARGET" = universal2-apple-darwin ]; then
             rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          elif [ "$RUNNER_OS" = macOS ]; then
+            rustup target add "$TARGET"
           fi
 
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -87,15 +92,25 @@ jobs:
         env:
           TAG: ${{ github.event_name == 'push' && github.ref_name || 'dry-run' }}
           NAME: ${{ matrix.name }}
+          CROSS: ${{ matrix.cross || false }}
         run: |
           mkdir -p bin stage
           unzip -o -j dist/*.whl '*.data/scripts/prhub' -d stage
           chmod +x stage/prhub
-          stage/prhub --version
+          if [ "$RUNNER_OS" = macOS ]; then lipo -archs stage/prhub; fi
+          # an Intel build on an Apple Silicon runner runs only under Rosetta; without it, its architecture is the check
+          if [ "$CROSS" != true ]; then
+            stage/prhub --version
+          elif arch -x86_64 /usr/bin/true 2>/dev/null; then
+            arch -x86_64 stage/prhub --version
+          else
+            lipo -archs stage/prhub | grep -qx x86_64
+          fi
           cp LICENSE README.md stage/
           tar -czf "bin/prhub-${TAG}-${NAME}.tar.gz" -C stage .
 
       - name: Smoke-test the wheel in a clean venv
+        if: ${{ !matrix.cross }}
         working-directory: ${{ runner.temp }}
         env:
           DIST: ${{ github.workspace }}/dist

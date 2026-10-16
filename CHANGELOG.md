@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-15
+
 ### Changed
 
 - A poll sends GitHub up to 4 requests at a time instead of one after another: the PR and commit batches, and the

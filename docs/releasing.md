@@ -44,7 +44,8 @@ OpenID Connect, so no API token is stored anywhere. Only a maintainer can publis
    (the Intel build is cross-compiled on an Apple Silicon runner: it runs under Rosetta when present, else its
    architecture is checked). Then, in order:
    1. the SLSA generator signs build provenance for all of them, and attaches `prhub.intoto.jsonl` to the release;
-   2. the binaries, wheels and sdist are attached to the release;
+   2. the binaries, wheels and sdist are attached to the release (PyPI gets the thin macOS wheels, not the universal2
+      one, which installers would otherwise tie with them);
    3. only then is the package uploaded to PyPI (with PEP 740 attestations), after your approval of the `pypi`
       environment if you set one. If any earlier step fails, nothing reaches PyPI.
 

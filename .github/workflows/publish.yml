@@ -237,7 +237,9 @@ jobs:
           name: sdist
           path: out/dist
 
-      - name: Only wheels and the sdist go to PyPI
-        run: mkdir dist && mv out/dist/* dist/ && ls dist
+      # The universal2 wheel's name also carries the thin macOS tags, so installers tie it with the thin wheels and may
+      # pick it: PyPI gets the thin wheels only, and the universal build stays on the GitHub release.
+      - name: Only the thin wheels and the sdist go to PyPI
+        run: mkdir dist && mv out/dist/* dist/ && rm -f dist/*universal2*.whl && ls dist
 
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

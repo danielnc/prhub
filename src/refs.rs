@@ -71,10 +71,10 @@ pub fn index_clones(roots: &[String], depth: usize) -> BTreeMap<String, String> 
                     if hidden || !p.is_dir() {
                         continue;
                     }
-                    if p.join(".git").exists() {
-                        if let Some((owner, repo)) = remote_of(&p.to_string_lossy()) {
-                            idx.entry(repo.to_lowercase()).or_insert(format!("{owner}/{repo}"));
-                        }
+                    if p.join(".git").exists()
+                        && let Some((owner, repo)) = remote_of(&p.to_string_lossy())
+                    {
+                        idx.entry(repo.to_lowercase()).or_insert(format!("{owner}/{repo}"));
                     }
                     next.push(p);
                 }

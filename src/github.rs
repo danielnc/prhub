@@ -1,10 +1,10 @@
 //! The only module that talks to GitHub: batched GraphQL reads plus two small REST calls, rate-limit aware.
 
-use crate::commits::{alias_query as commit_alias_query, CommitRef};
+use crate::commits::{CommitRef, alias_query as commit_alias_query};
 use crate::refs::PrRef;
-use crate::util::{dig, run_timeout, s, take, truthy, RunError};
+use crate::util::{RunError, dig, run_timeout, s, take, truthy};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -103,11 +103,13 @@ pub fn parallel<T: Sync, R: Send>(items: &[T], workers: usize, f: impl Fn(&T) ->
     let out: Vec<Mutex<Option<R>>> = items.iter().map(|_| Mutex::new(None)).collect();
     std::thread::scope(|scope| {
         for _ in 0..workers.min(items.len()) {
-            scope.spawn(|| loop {
-                let i = next.fetch_add(1, Ordering::SeqCst);
-                let Some(item) = items.get(i) else { break };
-                let r = f(item);
-                *out[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::SeqCst);
+                    let Some(item) = items.get(i) else { break };
+                    let r = f(item);
+                    *out[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+                }
             });
         }
     });
@@ -411,10 +413,10 @@ impl<T: Transport> Api for GitHub<T> {
             }
             let search = &d["search"];
             for n in search["nodes"].as_array().into_iter().flatten() {
-                if let (Some(nwo), Some(num)) = (n["repository"]["nameWithOwner"].as_str(), n["number"].as_u64()) {
-                    if let Some((owner, repo)) = nwo.split_once('/') {
-                        refs.push(PrRef::new(owner, repo, num));
-                    }
+                if let (Some(nwo), Some(num)) = (n["repository"]["nameWithOwner"].as_str(), n["number"].as_u64())
+                    && let Some((owner, repo)) = nwo.split_once('/')
+                {
+                    refs.push(PrRef::new(owner, repo, num));
                 }
             }
             if !truthy(&search["pageInfo"]["hasNextPage"]) {

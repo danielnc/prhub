@@ -212,11 +212,7 @@ pub(crate) mod tests {
     /// submitted after the head commit. `suites`: (status, workflow run event or None for an app that is not Actions).
     pub fn pr(p: Pr) -> Value {
         let reviews = p.reviews.clone().unwrap_or_else(|| {
-            if p.review == "APPROVED" {
-                vec![("approver", "APPROVED", "2026-10-11T09:00:00Z", None)]
-            } else {
-                vec![]
-            }
+            if p.review == "APPROVED" { vec![("approver", "APPROVED", "2026-10-11T09:00:00Z", None)] } else { vec![] }
         });
         json!({
             "state": p.state, "isDraft": p.draft, "reviewDecision": p.review, "mergeStateStatus": p.merge,

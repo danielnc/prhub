@@ -4,13 +4,13 @@
 
 use crate::commits::{self, CommitRef, RunStates};
 use crate::conditions::{fingerprint, summary};
-use crate::github::{parallel, Api, GhError, GitHub, CONCURRENCY};
+use crate::github::{Api, CONCURRENCY, GhError, GitHub, parallel};
 use crate::refs::{self, PrRef};
 use crate::store::{self, CommitRecord, Config, PrRecord};
 use crate::util::{local_datetime, now, now_i, parse_iso, truthy};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Duration;
 
 /// An agent's `wait` can pull a poll forward, but not more often than this.
@@ -140,10 +140,10 @@ impl Daemon {
     }
 
     pub fn get_token(&mut self) -> Result<String, GhError> {
-        if let Some(t) = &self.token {
-            if now() - self.token_at < TOKEN_TTL {
-                return Ok(t.clone());
-            }
+        if let Some(t) = &self.token
+            && now() - self.token_at < TOKEN_TTL
+        {
+            return Ok(t.clone());
         }
         match self.api.token() {
             Ok(t) => {
@@ -467,10 +467,10 @@ impl Daemon {
             }
         }
         for rec in store::all_prs() {
-            if rec.closed_seen_at.is_some_and(|c| now - c as f64 > KEEP_CLOSED_FILE) {
-                if let Some(r) = refs::parse(&rec.r) {
-                    let _ = std::fs::remove_file(store::pr_path(&r));
-                }
+            if rec.closed_seen_at.is_some_and(|c| now - c as f64 > KEEP_CLOSED_FILE)
+                && let Some(r) = refs::parse(&rec.r)
+            {
+                let _ = std::fs::remove_file(store::pr_path(&r));
             }
         }
         Ok(())
@@ -625,8 +625,8 @@ pub fn sleep(interval: i64, started: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commits::tests::{node_at, suite, LATER, OID};
-    use crate::conditions::tests::{pr, Pr};
+    use crate::commits::tests::{LATER, OID, node_at, suite};
+    use crate::conditions::tests::{Pr, pr};
     use crate::github::{CommitBatch, Failing, PrBatch, RunState};
     use crate::testutil::Isolated;
     use std::sync::{Arc, Mutex, MutexGuard};
@@ -836,7 +836,7 @@ mod tests {
         d.last_discover = 0.0;
         d.poll_once(60);
         assert_eq!(store::daemon_state()["last_poll_done"], done); // a failed poll is not a done poll
-                                                                   // the daemon keeps its state in memory and writes it each poll: age the last good poll there
+        // the daemon keeps its state in memory and writes it each poll: age the last good poll there
         d.state.insert("last_poll_ok".into(), json!(now_i() - 5000));
         d.state.insert("last_poll_done".into(), json!(now_i() - 5000));
         d.poll_once(60);

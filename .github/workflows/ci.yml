@@ -37,6 +37,26 @@ jobs:
       - name: cargo test
         run: cargo test --locked
 
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The oldest Rust that Cargo.toml's rust-version promises, read from the manifest so the two cannot drift.
+      # The other jobs use the latest stable, so without this a dependency bump could quietly need a newer compiler.
+      - name: Rust toolchain (rust-version from Cargo.toml)
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          test -n "$msrv"
+          rustup toolchain install "$msrv" --profile minimal && rustup default "$msrv"
+          rustc --version
+
+      - name: cargo test
+        run: cargo test --locked
+
   coverage:
     name: coverage
     runs-on: ubuntu-latest
@@ -160,7 +180,7 @@ jobs:
   ci:
     name: ci
     if: always()
-    needs: [test, coverage, lint, package, binary, gitleaks]
+    needs: [test, msrv, coverage, lint, package, binary, gitleaks]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed

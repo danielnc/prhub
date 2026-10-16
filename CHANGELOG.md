@@ -10,6 +10,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - PyPI gets the thin macOS wheels (arm64, x86_64) but no longer the universal2 one: its file name also carries the
   thin tags, so `uv tool install prhub` picked it and installed both architectures (8.7 MB instead of 4.1 MB, seen
   on the maintainer's Apple Silicon machine with 0.2.1, 15/10). The universal build stays on the GitHub release.
+- The crate is on Rust edition 2024, and the minimum Rust is 1.88 instead of 1.82: the locked dependencies (the
+  `icu_*` crates under `url`) already needed 1.88, so 1.82 was a promise nobody checked. CI now builds and tests on
+  that minimum as well as on the latest stable.
 
 ## [0.2.1] - 2026-10-15
 

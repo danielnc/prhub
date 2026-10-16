@@ -209,12 +209,13 @@ pub fn graphql(t: &dyn Transport, query: &str, variables: Value, token: &str) ->
 }
 
 fn rest_get(t: &dyn Transport, url: &str, token: &str, label: &str) -> Result<Value, GhError> {
-    let (code, _, text) = t.send("GET", url, token, None).map_err(|e| GhError::new(format!("network: {e}")))?;
+    let (code, reset, text) = t.send("GET", url, token, None).map_err(|e| GhError::new(format!("network: {e}")))?;
     if !(200..300).contains(&code) {
         let text = take(&text, 200);
         return Err(GhError {
             msg: format!("{label} HTTP {code}: {text}"),
             rate_limited: rate_limited(code, &text),
+            reset_at: reset,
             ..Default::default()
         });
     }
@@ -570,6 +571,9 @@ pub(crate) mod tests {
         assert!(g.t.calls.lock().unwrap().last().unwrap().1.ends_with("/repos/acme/api/actions/runs/7"));
         g.t.status(403, "API rate limit exceeded", None);
         assert!(g.run_state("acme", "api", "7", "t").unwrap_err().rate_limited);
+        g.t.status(403, "You have exceeded a secondary rate limit", Some("1791750000"));
+        let e = g.contains("acme", "api", "aaa", "bbb", "t").unwrap_err();
+        assert!(e.rate_limited && e.reset_at.as_deref() == Some("1791750000")); // REST keeps the reset too
     }
 
     #[test]

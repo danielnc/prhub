@@ -61,8 +61,8 @@ enum Cmd {
         /// seconds (default 3600)
         #[arg(long, default_value_t = 3600)]
         timeout: i64,
-        /// seconds between local reads (default 3)
-        #[arg(long, default_value_t = 3.0)]
+        /// seconds between local reads (default 1)
+        #[arg(long, default_value_t = 1.0)]
         poll: f64,
     },
     /// track PRs the discovery search does not find
@@ -502,7 +502,7 @@ fn status(io: &mut Io) -> i32 {
         io.out,
         "watches: {}  PR files: {}  commits watched: {}",
         store::watches().len(),
-        store::all_prs().len(),
+        store::pr_file_count(),
         store::commit_watches().len()
     );
     if healthy {

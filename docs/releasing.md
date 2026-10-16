@@ -39,8 +39,10 @@ OpenID Connect, so no API token is stored anywhere. Only a maintainer can publis
    ```
 
 3. The tag starts the workflow. It checks that the tag equals `v` + the version in `Cargo.toml`, runs clippy and the
-   tests, then builds a wheel and a standalone binary for Linux x86_64, Linux aarch64 (both for glibc 2.17 and later)
-   and macOS (universal), plus the sdist, and installs each wheel in a clean venv. Then, in order:
+   tests, then builds a wheel and a standalone binary for Linux x86_64, Linux aarch64 (both for glibc 2.17 and later),
+   macOS arm64, macOS x86_64 and macOS universal, plus the sdist, and installs each wheel it can run in a clean venv
+   (the Intel build is cross-compiled on an Apple Silicon runner: it runs under Rosetta when present, else its
+   architecture is checked). Then, in order:
    1. the SLSA generator signs build provenance for all of them, and attaches `prhub.intoto.jsonl` to the release;
    2. the binaries, wheels and sdist are attached to the release;
    3. only then is the package uploaded to PyPI (with PEP 740 attestations), after your approval of the `pypi`

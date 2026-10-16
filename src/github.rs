@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 pub const API: &str = "https://api.github.com/graphql";
@@ -84,8 +86,41 @@ pub fn rate_limited(code: u16, text: &str) -> bool {
 
 /// One HTTP exchange: Ok((status, x-ratelimit-reset, body)) for any response, Err(message) when none arrived (a
 /// connection that failed, or a body cut short mid-read).
-pub trait Transport {
+pub trait Transport: Sync {
     fn send(&self, method: &str, url: &str, token: &str, body: Option<&str>) -> Reply;
+}
+
+/// How many requests to GitHub run at once. A poll's batches and REST calls used to go one after another, so a poll
+/// took as long as all of them together; GitHub's secondary rate limits penalise much more concurrency than this.
+pub const CONCURRENCY: usize = 4;
+
+/// `f` over every item, `workers` at a time, answers in the items' order.
+pub fn parallel<T: Sync, R: Send>(items: &[T], workers: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    if items.len() <= 1 || workers <= 1 {
+        return items.iter().map(&f).collect();
+    }
+    let next = AtomicUsize::new(0);
+    let out: Vec<Mutex<Option<R>>> = items.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..workers.min(items.len()) {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::SeqCst);
+                let Some(item) = items.get(i) else { break };
+                let r = f(item);
+                *out[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            });
+        }
+    });
+    out.into_iter().filter_map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).collect()
+}
+
+/// When a rate-limited request may be retried, as epoch seconds: GitHub's `x-ratelimit-reset` for the primary limit,
+/// else `Retry-After` (seconds from now) for a secondary limit.
+pub fn reset_from(ratelimit_reset: Option<&str>, retry_after: Option<&str>, now: i64) -> Option<String> {
+    if let Some(r) = ratelimit_reset.filter(|r| !r.is_empty()) {
+        return Some(r.to_string());
+    }
+    retry_after.and_then(|r| r.trim().parse::<i64>().ok()).map(|secs| (now + secs).to_string())
 }
 
 pub struct Ureq {
@@ -116,7 +151,7 @@ impl Transport for Ureq {
             Err(e) => return Err(e.to_string()),
         };
         let status = resp.status();
-        let reset = resp.header("x-ratelimit-reset").map(String::from);
+        let reset = reset_from(resp.header("x-ratelimit-reset"), resp.header("retry-after"), crate::util::now_i());
         let text = resp.into_string().map_err(|e| e.to_string())?;
         Ok((status, reset, text))
     }
@@ -174,12 +209,13 @@ pub fn graphql(t: &dyn Transport, query: &str, variables: Value, token: &str) ->
 }
 
 fn rest_get(t: &dyn Transport, url: &str, token: &str, label: &str) -> Result<Value, GhError> {
-    let (code, _, text) = t.send("GET", url, token, None).map_err(|e| GhError::new(format!("network: {e}")))?;
+    let (code, reset, text) = t.send("GET", url, token, None).map_err(|e| GhError::new(format!("network: {e}")))?;
     if !(200..300).contains(&code) {
         let text = take(&text, 200);
         return Err(GhError {
             msg: format!("{label} HTTP {code}: {text}"),
             rate_limited: rate_limited(code, &text),
+            reset_at: reset,
             ..Default::default()
         });
     }
@@ -210,59 +246,106 @@ pub const MAX_TRANSIENT_FAILURES: usize = 4;
 /// fails is left out of the result, so one heavy PR or commit cannot stop all the others from being read; its previous
 /// record is kept. Split halves go to the back of the queue, and any success resets the count, so more than
 /// MAX_TRANSIENT_FAILURES consecutive failures mean an outage and raise, while one bad item among many is isolated.
-pub fn batched<R: Clone>(
+pub fn batched<R: Clone + Send + Sync>(
     t: &dyn Transport,
     refs: &[R],
     chunk: usize,
-    build: impl Fn(&[R]) -> String,
-    read: impl Fn(&Value, usize) -> Value,
+    workers: usize,
+    build: impl Fn(&[R]) -> String + Sync,
+    read: impl Fn(&Value, usize) -> Value + Sync,
     token: &str,
 ) -> Result<(Vec<(R, Value)>, Value), GhError> {
-    let mut out = Vec::new();
-    let mut rate = Value::Null;
-    let mut failures = 0;
-    let mut pending: VecDeque<Vec<R>> = refs.chunks(chunk.max(1)).map(|c| c.to_vec()).collect();
-    while let Some(part) = pending.pop_front() {
-        let d = match graphql(t, &build(&part), json!({}), token) {
-            Ok(d) => d,
-            Err(e) if !e.transient => return Err(e),
-            Err(e) => {
-                failures += 1;
-                if failures > MAX_TRANSIENT_FAILURES {
-                    return Err(e);
+    struct Work<R> {
+        pending: VecDeque<Vec<(usize, R)>>,
+        busy: usize,
+        failures: usize,
+        error: Option<GhError>,
+        out: Vec<(usize, R, Value)>,
+        rate: Value,
+    }
+    let indexed: Vec<(usize, R)> = refs.iter().cloned().enumerate().collect();
+    let work = Mutex::new(Work {
+        pending: indexed.chunks(chunk.max(1)).map(|c| c.to_vec()).collect(),
+        busy: 0,
+        failures: 0,
+        error: None,
+        out: Vec::new(),
+        rate: Value::Null,
+    });
+    let changed = Condvar::new();
+    let worker = || loop {
+        let part = {
+            let mut w = work.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                if w.error.is_some() {
+                    return;
                 }
-                if part.len() > 1 {
-                    let half = part.len() / 2;
-                    pending.push_back(part[..half].to_vec());
-                    pending.push_back(part[half..].to_vec());
+                if let Some(p) = w.pending.pop_front() {
+                    w.busy += 1;
+                    break p;
                 }
-                continue;
+                if w.busy == 0 {
+                    return; // nothing left, and nobody still running can split a batch into more work
+                }
+                w = changed.wait(w).unwrap_or_else(|e| e.into_inner());
             }
         };
-        failures = 0;
-        if truthy(&d["rateLimit"]) {
-            rate = d["rateLimit"].clone();
+        let only: Vec<R> = part.iter().map(|(_, r)| r.clone()).collect();
+        let answer = graphql(t, &build(&only), json!({}), token);
+        let mut w = work.lock().unwrap_or_else(|e| e.into_inner());
+        w.busy -= 1;
+        match answer {
+            Ok(d) => {
+                w.failures = 0;
+                if truthy(&d["rateLimit"]) {
+                    w.rate = d["rateLimit"].clone();
+                }
+                for (j, (i, r)) in part.into_iter().enumerate() {
+                    w.out.push((i, r, read(&d, j)));
+                }
+            }
+            Err(e) if !e.transient => w.error = Some(e),
+            Err(e) => {
+                w.failures += 1;
+                if w.failures > MAX_TRANSIENT_FAILURES {
+                    w.error = Some(e);
+                } else if part.len() > 1 {
+                    let half = part.len() / 2;
+                    w.pending.push_back(part[..half].to_vec());
+                    w.pending.push_back(part[half..].to_vec());
+                }
+            }
         }
-        for (j, r) in part.into_iter().enumerate() {
-            out.push((r, read(&d, j)));
+        changed.notify_all();
+    };
+    std::thread::scope(|scope| {
+        for _ in 1..workers.max(1) {
+            scope.spawn(worker);
         }
+        worker();
+    });
+    let w = work.into_inner().unwrap_or_else(|e| e.into_inner());
+    if let Some(e) = w.error {
+        return Err(e);
     }
-    Ok((out, rate))
+    let mut out = w.out;
+    out.sort_by_key(|(i, _, _)| *i);
+    Ok((out.into_iter().map(|(_, r, v)| (r, v)).collect(), w.rate))
 }
 
 /// What the daemon needs from GitHub. The real one is `GitHub`; tests use a fake.
-pub trait Api {
-    fn token(&mut self) -> Result<String, GhError>;
-    fn discover_open(&mut self, query: &str, token: &str) -> Result<(Vec<PrRef>, Value), GhError>;
+pub trait Api: Sync {
+    fn token(&self) -> Result<String, GhError>;
+    fn discover_open(&self, query: &str, token: &str) -> Result<(Vec<PrRef>, Value), GhError>;
     /// Full state of each PR. A PR that no longer resolves maps to None; one GitHub could not return is missing.
-    fn fetch_prs(&mut self, refs: &[PrRef], token: &str) -> Result<PrBatch, GhError>;
+    fn fetch_prs(&self, refs: &[PrRef], token: &str) -> Result<PrBatch, GhError>;
     /// Names and links of the failing checks, only for PRs whose CI just went red (kept out of the hot query).
-    fn fetch_failing(&mut self, refs: &[PrRef], token: &str) -> Result<Vec<(PrRef, Vec<Failing>)>, GhError>;
+    fn fetch_failing(&self, refs: &[PrRef], token: &str) -> Result<Vec<(PrRef, Vec<Failing>)>, GhError>;
     /// Raw repository nodes (commit + its repo's recent deployments). A commit GitHub could not return is missing.
-    fn fetch_commits(&mut self, refs: &[CommitRef], token: &str) -> Result<CommitBatch, GhError>;
+    fn fetch_commits(&self, refs: &[CommitRef], token: &str) -> Result<CommitBatch, GhError>;
     /// Whether commit `newer` contains `sha`.
-    fn contains(&mut self, owner: &str, repo: &str, sha: &str, newer: &str, token: &str) -> Result<bool, GhError>;
-    fn run_state(&mut self, owner: &str, repo: &str, run: &str, token: &str) -> Result<RunState, GhError>;
+    fn contains(&self, owner: &str, repo: &str, sha: &str, newer: &str, token: &str) -> Result<bool, GhError>;
+    fn run_state(&self, owner: &str, repo: &str, run: &str, token: &str) -> Result<RunState, GhError>;
 }
 
 pub struct GitHub<T: Transport = Ureq> {
@@ -307,11 +390,11 @@ pub fn parse_failing(pr: &Value) -> Vec<Failing> {
 }
 
 impl<T: Transport> Api for GitHub<T> {
-    fn token(&mut self) -> Result<String, GhError> {
+    fn token(&self) -> Result<String, GhError> {
         gh_token(30)
     }
 
-    fn discover_open(&mut self, query: &str, token: &str) -> Result<(Vec<PrRef>, Value), GhError> {
+    fn discover_open(&self, query: &str, token: &str) -> Result<(Vec<PrRef>, Value), GhError> {
         let q = "query($q: String!, $after: String) {
           rateLimit { cost remaining resetAt }
           search(query: $q, type: ISSUE, first: 100, after: $after) {
@@ -342,11 +425,12 @@ impl<T: Transport> Api for GitHub<T> {
         Ok((refs, rate))
     }
 
-    fn fetch_prs(&mut self, refs: &[PrRef], token: &str) -> Result<PrBatch, GhError> {
+    fn fetch_prs(&self, refs: &[PrRef], token: &str) -> Result<PrBatch, GhError> {
         let (out, rate) = batched(
             &self.t,
             refs,
             20,
+            CONCURRENCY,
             |part| pr_alias_query(part, PR_FIELDS),
             |d, j| d[format!("p{j}")]["pullRequest"].clone(),
             token,
@@ -354,7 +438,7 @@ impl<T: Transport> Api for GitHub<T> {
         Ok((out.into_iter().map(|(r, v)| (r, (!v.is_null()).then_some(v))).collect(), rate))
     }
 
-    fn fetch_failing(&mut self, refs: &[PrRef], token: &str) -> Result<Vec<(PrRef, Vec<Failing>)>, GhError> {
+    fn fetch_failing(&self, refs: &[PrRef], token: &str) -> Result<Vec<(PrRef, Vec<Failing>)>, GhError> {
         if refs.is_empty() {
             return Ok(vec![]);
         }
@@ -366,18 +450,18 @@ impl<T: Transport> Api for GitHub<T> {
             .collect())
     }
 
-    fn fetch_commits(&mut self, refs: &[CommitRef], token: &str) -> Result<CommitBatch, GhError> {
+    fn fetch_commits(&self, refs: &[CommitRef], token: &str) -> Result<CommitBatch, GhError> {
         // each one is heavy: up to 50 check suites and 30 deployments
-        batched(&self.t, refs, 5, commit_alias_query, |d, j| d[format!("c{j}")].clone(), token)
+        batched(&self.t, refs, 5, CONCURRENCY, commit_alias_query, |d, j| d[format!("c{j}")].clone(), token)
     }
 
-    fn contains(&mut self, owner: &str, repo: &str, sha: &str, newer: &str, token: &str) -> Result<bool, GhError> {
+    fn contains(&self, owner: &str, repo: &str, sha: &str, newer: &str, token: &str) -> Result<bool, GhError> {
         let url = format!("https://api.github.com/repos/{owner}/{repo}/compare/{sha}...{newer}");
         let d = rest_get(&self.t, &url, token, "compare")?;
         Ok(matches!(d["status"].as_str(), Some("ahead" | "identical")))
     }
 
-    fn run_state(&mut self, owner: &str, repo: &str, run: &str, token: &str) -> Result<RunState, GhError> {
+    fn run_state(&self, owner: &str, repo: &str, run: &str, token: &str) -> Result<RunState, GhError> {
         let url = format!("https://api.github.com/repos/{owner}/{repo}/actions/runs/{run}");
         let d = rest_get(&self.t, &url, token, "run")?;
         let status = d["status"].as_str().unwrap_or("").to_uppercase();
@@ -389,34 +473,33 @@ impl<T: Transport> Api for GitHub<T> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use std::cell::RefCell;
 
     /// Canned responses, in order: Ok((status, reset, body)) or Err(network message). Requests are recorded.
     #[derive(Default)]
     pub struct FakeTransport {
-        pub queue: RefCell<VecDeque<Reply>>,
-        pub calls: RefCell<Vec<(String, String, Option<String>)>>,
+        pub queue: Mutex<VecDeque<Reply>>,
+        pub calls: Mutex<Vec<(String, String, Option<String>)>>,
     }
 
     impl FakeTransport {
         pub fn ok(&self, body: Value) {
-            self.queue.borrow_mut().push_back(Ok((200, None, body.to_string())));
+            self.queue.lock().unwrap().push_back(Ok((200, None, body.to_string())));
         }
         pub fn status(&self, code: u16, body: &str, reset: Option<&str>) {
-            self.queue.borrow_mut().push_back(Ok((code, reset.map(String::from), body.to_string())));
+            self.queue.lock().unwrap().push_back(Ok((code, reset.map(String::from), body.to_string())));
         }
         pub fn raw(&self, body: &str) {
-            self.queue.borrow_mut().push_back(Ok((200, None, body.to_string())));
+            self.queue.lock().unwrap().push_back(Ok((200, None, body.to_string())));
         }
         pub fn down(&self, msg: &str) {
-            self.queue.borrow_mut().push_back(Err(msg.to_string()));
+            self.queue.lock().unwrap().push_back(Err(msg.to_string()));
         }
     }
 
     impl Transport for FakeTransport {
         fn send(&self, method: &str, url: &str, _token: &str, body: Option<&str>) -> Reply {
-            self.calls.borrow_mut().push((method.into(), url.into(), body.map(String::from)));
-            self.queue.borrow_mut().pop_front().expect("an unexpected request")
+            self.calls.lock().unwrap().push((method.into(), url.into(), body.map(String::from)));
+            self.queue.lock().unwrap().pop_front().expect("an unexpected request")
         }
     }
 
@@ -447,7 +530,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_429_is_a_rate_limit_whatever_its_body_says() {
-        let mut g = gh();
+        let g = gh();
         g.t.status(429, "", None);
         assert!(g.run_state("acme", "api", "7", "t").unwrap_err().rate_limited);
         g.t.status(429, "", None);
@@ -458,7 +541,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_response_cut_short_is_a_transient_network_error() {
-        let mut g = gh();
+        let g = gh();
         g.t.down("connection reset");
         let e = graphql(&g.t, "q", json!({}), "t").unwrap_err();
         assert!(e.transient && e.msg.starts_with("network"));
@@ -472,12 +555,12 @@ pub(crate) mod tests {
 
     #[test]
     fn rest_calls() {
-        let mut g = gh();
+        let g = gh();
         for (status, want) in [("ahead", true), ("identical", true), ("behind", false), ("diverged", false)] {
             g.t.ok(json!({"status": status}));
             assert_eq!(g.contains("acme", "api", "aaa", "bbb", "t").unwrap(), want);
         }
-        assert!(g.t.calls.borrow()[0].1.ends_with("/repos/acme/api/compare/aaa...bbb"));
+        assert!(g.t.calls.lock().unwrap()[0].1.ends_with("/repos/acme/api/compare/aaa...bbb"));
         g.t.status(404, "Not Found", None);
         let e = g.contains("acme", "api", "aaa", "bbb", "t").unwrap_err();
         assert!(e.msg.starts_with("compare HTTP 404") && !e.rate_limited);
@@ -485,14 +568,17 @@ pub(crate) mod tests {
         assert_eq!(g.run_state("acme", "api", "7", "t").unwrap(), (Some("COMPLETED".into()), Some("SUCCESS".into())));
         g.t.ok(json!({"status": "in_progress", "conclusion": null}));
         assert_eq!(g.run_state("acme", "api", "7", "t").unwrap(), (Some("IN_PROGRESS".into()), None));
-        assert!(g.t.calls.borrow().last().unwrap().1.ends_with("/repos/acme/api/actions/runs/7"));
+        assert!(g.t.calls.lock().unwrap().last().unwrap().1.ends_with("/repos/acme/api/actions/runs/7"));
         g.t.status(403, "API rate limit exceeded", None);
         assert!(g.run_state("acme", "api", "7", "t").unwrap_err().rate_limited);
+        g.t.status(403, "You have exceeded a secondary rate limit", Some("1791750000"));
+        let e = g.contains("acme", "api", "aaa", "bbb", "t").unwrap_err();
+        assert!(e.rate_limited && e.reset_at.as_deref() == Some("1791750000")); // REST keeps the reset too
     }
 
     #[test]
     fn discovery_pages_through_the_search() {
-        let mut g = gh();
+        let g = gh();
         g.t.ok(json!({"data": {"rateLimit": {"remaining": 10}, "search": {
             "pageInfo": {"hasNextPage": true, "endCursor": "c1"},
             "nodes": [{"number": 1, "repository": {"nameWithOwner": "acme/api"}}, {}]}}}));
@@ -501,19 +587,19 @@ pub(crate) mod tests {
         let (refs, rate) = g.discover_open("is:pr", "t").unwrap();
         assert_eq!(refs, vec![PrRef::new("acme", "api", 1), PrRef::new("acme", "web", 2)]);
         assert_eq!(rate["remaining"], 9);
-        assert!(g.t.calls.borrow()[1].2.as_ref().unwrap().contains("\"after\":\"c1\""));
+        assert!(g.t.calls.lock().unwrap()[1].2.as_ref().unwrap().contains("\"after\":\"c1\""));
     }
 
     #[test]
     fn prs_failing_checks_and_commits() {
-        let mut g = gh();
+        let g = gh();
         let a = PrRef::new("acme", "api", 1);
         let b = PrRef::new("acme", "api", 2);
         g.t.ok(json!({"data": {"rateLimit": {"remaining": 5}, "p0": {"pullRequest": {"number": 1}}, "p1": {"pullRequest": null}}}));
         let (out, rate) = g.fetch_prs(&[a.clone(), b.clone()], "t").unwrap();
         assert_eq!(out, vec![(a.clone(), Some(json!({"number": 1}))), (b.clone(), None)]);
         assert_eq!(rate["remaining"], 5);
-        let q = g.t.calls.borrow()[0].2.clone().unwrap();
+        let q = g.t.calls.lock().unwrap()[0].2.clone().unwrap();
         assert!(q.contains("p0: repository(owner: \\\"acme\\\", name: \\\"api\\\") { pullRequest(number: 1)"));
         assert!(g.fetch_failing(&[], "t").unwrap().is_empty());
         g.t.ok(json!({"data": {"p0": {"pullRequest": {"commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": [
@@ -531,7 +617,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_batch_github_times_out_on_is_split_and_one_bad_item_is_isolated() {
-        let mut g = gh();
+        let g = gh();
         let refs: Vec<PrRef> = (1..=4).map(|n| PrRef::new("acme", "api", n)).collect();
         let timeout = json!({"errors": [{"message": "Something went wrong while executing your query"}]});
         g.t.ok(timeout.clone()); // the batch of 4
@@ -543,19 +629,69 @@ pub(crate) mod tests {
             &g.t,
             &refs,
             4,
+            1, // one worker: the order of the canned answers is the order of the requests
             |p| pr_alias_query(p, "number"),
             |d, j| d[format!("p{j}")]["pullRequest"].clone(),
             "t",
         )
         .unwrap();
         assert_eq!(out.iter().map(|(r, _)| r.number).collect::<Vec<_>>(), vec![1, 2, 4]);
-        for _ in 0..=MAX_TRANSIENT_FAILURES {
-            g.t.status(504, "gateway timeout", None);
+        for _ in 0..3 * MAX_TRANSIENT_FAILURES {
+            g.t.status(504, "gateway timeout", None); // enough for every worker still in flight at the cutoff
         }
         let e = g.fetch_prs(&refs, "t").unwrap_err();
         assert!(e.transient && e.msg.starts_with("HTTP 504"));
+        g.t.queue.lock().unwrap().clear();
         g.t.status(401, "Bad credentials", None);
         assert!(!g.fetch_prs(&refs, "t").unwrap_err().transient);
+    }
+
+    #[test]
+    fn parallel_work_keeps_the_input_order() {
+        let items: Vec<u64> = (0..50).collect();
+        let out = parallel(&items, CONCURRENCY, |n| {
+            std::thread::sleep(Duration::from_millis(50 - n));
+            n * 2
+        });
+        assert_eq!(out, items.iter().map(|n| n * 2).collect::<Vec<_>>());
+        assert_eq!(parallel(&[7u64], 4, |n| n + 1), vec![8]);
+        assert!(parallel(&Vec::<u64>::new(), 4, |n| n + 1).is_empty());
+    }
+
+    #[test]
+    fn concurrent_batches_return_every_item_in_order() {
+        let g = gh();
+        let refs: Vec<PrRef> = (1..=9).map(|n| PrRef::new("acme", "api", n)).collect();
+        for _ in 0..5 {
+            // batches of two: whichever worker asks gets the next answer, so every answer names p0 and p1
+            g.t.ok(json!({"data": {"rateLimit": {"remaining": 7}, "p0": {"pullRequest": {"n": 0}}, "p1": {"pullRequest": {"n": 1}}}}));
+        }
+        let (out, rate) = batched(
+            &g.t,
+            &refs,
+            2,
+            CONCURRENCY,
+            |p| pr_alias_query(p, "number"),
+            |d, j| d[format!("p{j}")]["pullRequest"].clone(),
+            "t",
+        )
+        .unwrap();
+        assert_eq!(out.iter().map(|(r, _)| r.number).collect::<Vec<_>>(), (1..=9).collect::<Vec<_>>());
+        assert_eq!(rate["remaining"], 7);
+        assert_eq!(g.t.calls.lock().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn a_secondary_limit_says_when_to_retry() {
+        assert_eq!(reset_from(Some("1791750000"), Some("60"), 100).as_deref(), Some("1791750000"));
+        assert_eq!(reset_from(None, Some("60"), 100).as_deref(), Some("160"));
+        assert_eq!(reset_from(Some(""), Some(" 30 "), 100).as_deref(), Some("130"));
+        assert_eq!(reset_from(None, Some("soon"), 100), None);
+        assert_eq!(reset_from(None, None, 100), None);
+        let g = gh();
+        g.t.status(403, "You have exceeded a secondary rate limit", Some("160"));
+        let e = graphql(&g.t, "q", json!({}), "t").unwrap_err();
+        assert!(e.rate_limited && e.reset_at.as_deref() == Some("160"));
     }
 
     #[test]

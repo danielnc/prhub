@@ -215,7 +215,7 @@ Everything lives in `~/.local/state/prhub` (override with `PRHUB_HOME`):
 
 | path | what |
 |---|---|
-| `prs/<owner>__<repo>__<n>.json` | one record per PR: a summary plus the raw GraphQL fields |
+| `prs/<owner>__<repo>__<n>.json` | one record per PR: its summary (state, checks, reviews, merge state) and failing checks; deleted a day after the PR closes |
 | `commits/<owner>__<repo>__<sha>.json` | one record per watched commit |
 | `watch.json`, `commit-watch.json` | what agents asked to track, and who asked (`PRHUB_CALLER`, else a tmux or Herdr pane id) |
 | `events.jsonl` | every state change, one JSON line each; past 20 MB it moves to `events.jsonl.1` |

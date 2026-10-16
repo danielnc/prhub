@@ -4,7 +4,7 @@
 
 use crate::commits::{self, CommitRef, RunStates};
 use crate::conditions::{fingerprint, summary};
-use crate::github::{Api, GhError, GitHub};
+use crate::github::{parallel, Api, GhError, GitHub, CONCURRENCY};
 use crate::refs::{self, PrRef};
 use crate::store::{self, CommitRecord, Config, PrRecord};
 use crate::util::{local_datetime, now, now_i, parse_iso, truthy};
@@ -17,7 +17,10 @@ use std::time::Duration;
 pub const NUDGE_MIN_GAP: f64 = 15.0;
 /// A watched PR stays tracked this long after it closes.
 pub const KEEP_CLOSED_WATCH: f64 = 3600.0;
-pub const KEEP_CLOSED_FILE: f64 = 7.0 * 86400.0;
+/// A closed PR's record is deleted this long after it closed (no wait can need it by then).
+pub const KEEP_CLOSED_FILE: f64 = 86400.0;
+/// Old PR and commit files are swept this often, not every poll: the sweep reads every file.
+pub const SWEEP_EVERY: f64 = 3600.0;
 /// Deploy-run answers are kept this long; so are commit watches written before keep_until.
 pub const KEEP_COMMIT_WATCH: i64 = 3600;
 /// A commit GitHub keeps failing on is skipped this long before trying again.
@@ -93,6 +96,11 @@ pub struct Daemon {
     pub token_at: f64,
     /// commit -> when to try again after GitHub kept failing on it
     pub commit_retry: HashMap<String, f64>,
+    /// PRs last seen open, kept in memory so a poll does not read every record to find them; None until the first
+    /// poll scans the folder once.
+    pub known_open: Option<BTreeSet<PrRef>>,
+    /// When old files were last swept.
+    pub last_sweep: f64,
 }
 
 fn pick(s: &crate::conditions::Summary) -> Value {
@@ -126,6 +134,8 @@ impl Daemon {
             token: None,
             token_at: 0.0,
             commit_retry: HashMap::new(),
+            known_open: None,
+            last_sweep: 0.0,
         }
     }
 
@@ -149,16 +159,18 @@ impl Daemon {
         }
     }
 
-    pub fn tracked(&self) -> BTreeSet<PrRef> {
+    pub fn tracked(&mut self) -> BTreeSet<PrRef> {
         let mut out: BTreeSet<PrRef> = self.open_refs.iter().cloned().collect();
         out.extend(store::watches().keys().filter_map(|k| refs::parse(k)));
         // anything we last saw open keeps being read until it closes
-        out.extend(
+        let open = self.known_open.get_or_insert_with(|| {
             store::all_prs()
                 .iter()
                 .filter(|r| r.summary.state.as_deref() == Some("OPEN"))
-                .filter_map(|r| refs::parse(&r.r)),
-        );
+                .filter_map(|r| refs::parse(&r.r))
+                .collect()
+        });
+        out.extend(open.iter().cloned());
         out
     }
 
@@ -199,7 +211,6 @@ impl Daemon {
                 r: r.to_string(),
                 fetched_at: now as i64,
                 summary: s.clone(),
-                pr: pr.clone(),
                 failing: if red { prev.as_ref().map(|p| p.failing.clone()).unwrap_or_default() } else { vec![] },
                 closed_seen_at: None,
             };
@@ -221,6 +232,13 @@ impl Daemon {
                 rec.closed_seen_at = Some(c);
             }
             store::write_pr(r, &rec)?;
+            if let Some(open) = self.known_open.as_mut() {
+                if s.state.as_deref() == Some("OPEN") {
+                    open.insert(r.clone());
+                } else {
+                    open.remove(r);
+                }
+            }
         }
         if !went_red.is_empty() {
             went_red.truncate(20);
@@ -314,47 +332,78 @@ impl Daemon {
                 self.commit_retry.insert(r.to_string(), now + COMMIT_RETRY);
             }
         }
+        let api: &dyn Api = &*self.api;
+        let mut items = Vec::new();
         for (r, node) in &data {
             let prev = store::read_commit(r).unwrap_or_default();
-            let Some(mut s) = commits::summarize(node) else {
-                store::write_commit(
+            match commits::summarize(node) {
+                Some(s) => items.push((r.clone(), prev, s)),
+                None => store::write_commit(
                     r,
                     &CommitRecord { r: r.to_string(), fetched_at: now as i64, missing: true, ..Default::default() },
-                )?;
-                continue;
-            };
-            // A deployment counts once the workflow run that made it has finished; this commit's runs came with it.
-            let mut states: RunStates = commits::own_runs(&s);
-            for run in commits::unknown_runs(&s, &states) {
-                let key = format!("{}/{}#{run}", r.owner, r.repo);
-                let st = match known(&seen, &key) {
-                    Some(st) => st,
-                    None => match self.api.run_state(&r.owner, &r.repo, &run, token) {
-                        Ok(st) => {
-                            seen.insert(key, json!([st.0, st.1, now]));
-                            st
-                        }
-                        Err(e) if e.rate_limited => return Err(e.into()),
-                        Err(_) => continue,
-                    },
-                };
-                states.insert(run, st);
+                )?,
             }
-            commits::gate_deploys(&mut s, &states);
+        }
+        // A deployment counts once the workflow run that made it has finished; this commit's runs came with it. The
+        // other runs are asked about all at once, CONCURRENCY at a time, each at most once per poll.
+        let mut asks: Vec<(String, String, String)> = Vec::new();
+        for (r, _, s) in &items {
+            for run in commits::unknown_runs(s, &commits::own_runs(s)) {
+                let job = (r.owner.clone(), r.repo.clone(), run);
+                if known(&seen, &format!("{}/{}#{}", job.0, job.1, job.2)).is_none() && !asks.contains(&job) {
+                    asks.push(job);
+                }
+            }
+        }
+        let answers = parallel(&asks, CONCURRENCY, |(o, r, run)| api.run_state(o, r, run, token));
+        for ((o, r, run), answer) in asks.iter().zip(answers) {
+            match answer {
+                Ok(st) => {
+                    seen.insert(format!("{o}/{r}#{run}"), json!([st.0, st.1, now]));
+                }
+                Err(e) if e.rate_limited => return Err(e.into()),
+                Err(_) => {} // unknown this poll: the deploy does not count yet
+            }
+        }
+        for (r, _, s) in items.iter_mut() {
+            let mut states: RunStates = commits::own_runs(s);
+            for run in commits::unknown_runs(s, &states) {
+                if let Some(st) = known(&seen, &format!("{}/{}#{run}", r.owner, r.repo)) {
+                    states.insert(run, st);
+                }
+            }
+            commits::gate_deploys(s, &states);
+        }
+        // Whether a later deploy contains the commit: one compare per new deployment, then remembered; all at once.
+        let mut compares: Vec<(String, String, String, String)> = Vec::new();
+        for (r, prev, s) in &items {
+            for (_, sha) in commits::needs_containment(s) {
+                let job = (r.owner.clone(), r.repo.clone(), s.oid.clone(), sha);
+                if !prev.contains.contains_key(&job.3) && !compares.contains(&job) {
+                    compares.push(job);
+                }
+            }
+        }
+        let answers = parallel(&compares, CONCURRENCY, |(o, r, oid, sha)| api.contains(o, r, oid, sha, token));
+        let mut contained: HashMap<(String, String, String, String), bool> = HashMap::new();
+        for (job, answer) in compares.into_iter().zip(answers) {
+            match answer {
+                Ok(v) => {
+                    contained.insert(job, v);
+                }
+                Err(e) if e.rate_limited => return Err(e.into()),
+                Err(_) => {} // asked again next poll
+            }
+        }
+        for (r, prev, mut s) in items {
             let mut cache = prev.contains.clone();
             for (env, sha) in commits::needs_containment(&s) {
-                if !cache.contains_key(&sha) {
-                    // one compare per new deployment, then remembered
-                    match self.api.contains(&r.owner, &r.repo, &s.oid, &sha, token) {
-                        Ok(v) => {
-                            cache.insert(sha.clone(), v);
-                        }
-                        Err(e) if e.rate_limited => return Err(e.into()),
-                        Err(_) => continue,
-                    }
+                let job = (r.owner.clone(), r.repo.clone(), s.oid.clone(), sha.clone());
+                if let Some(v) = contained.get(&job) {
+                    cache.insert(sha.clone(), *v);
                 }
-                if let Some(e) = s.envs.get_mut(&env) {
-                    e.live = cache.get(&sha).copied();
+                if let (Some(e), Some(v)) = (s.envs.get_mut(&env), cache.get(&sha)) {
+                    e.live = Some(*v);
                 }
             }
             for e in s.envs.values_mut() {
@@ -373,7 +422,7 @@ impl Daemon {
                 )?;
             }
             store::write_commit(
-                r,
+                &r,
                 &CommitRecord {
                     r: r.to_string(),
                     fetched_at: now as i64,
@@ -400,6 +449,10 @@ impl Daemon {
             })
         })?;
         store::with_commit_watches(|cw| cw.retain(|_, v| !store::commit_watch_expired(v, now, KEEP_COMMIT_WATCH)))?;
+        if now - self.last_sweep < SWEEP_EVERY {
+            return Ok(());
+        }
+        self.last_sweep = now;
         if let Ok(rd) = std::fs::read_dir(store::home().join("commits")) {
             for f in rd.flatten() {
                 let old = f
@@ -576,8 +629,7 @@ mod tests {
     use crate::conditions::tests::{pr, Pr};
     use crate::github::{CommitBatch, Failing, PrBatch, RunState};
     use crate::testutil::Isolated;
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex, MutexGuard};
 
     /// What the daemon sees of GitHub; each field is the next answer, and calls are counted.
     #[derive(Default)]
@@ -599,24 +651,24 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct Shared(Rc<RefCell<Fake>>);
+    struct Shared(Arc<Mutex<Fake>>);
 
     impl Shared {
-        fn get(&self) -> std::cell::RefMut<'_, Fake> {
-            self.0.borrow_mut()
+        fn get(&self) -> MutexGuard<'_, Fake> {
+            self.0.lock().unwrap()
         }
         fn calls(&self, k: &str) -> usize {
-            self.0.borrow().calls.get(k).copied().unwrap_or(0)
+            self.get().calls.get(k).copied().unwrap_or(0)
         }
     }
 
     impl Api for Shared {
-        fn token(&mut self) -> Result<String, GhError> {
+        fn token(&self) -> Result<String, GhError> {
             let mut f = self.get();
             *f.calls.entry("token").or_default() += 1;
             f.token.clone().unwrap_or(Ok("tok".into()))
         }
-        fn discover_open(&mut self, _q: &str, _t: &str) -> Result<(Vec<PrRef>, Value), GhError> {
+        fn discover_open(&self, _q: &str, _t: &str) -> Result<(Vec<PrRef>, Value), GhError> {
             let mut f = self.get();
             *f.calls.entry("discover").or_default() += 1;
             if let Some(e) = f.discover_error.clone() {
@@ -624,12 +676,12 @@ mod tests {
             }
             Ok((f.open.clone(), f.rate.clone()))
         }
-        fn fetch_prs(&mut self, refs: &[PrRef], _t: &str) -> Result<PrBatch, GhError> {
+        fn fetch_prs(&self, refs: &[PrRef], _t: &str) -> Result<PrBatch, GhError> {
             let mut f = self.get();
             *f.calls.entry("prs").or_default() += 1;
             Ok((refs.iter().map(|r| (r.clone(), f.prs.get(r).cloned())).collect(), f.rate.clone()))
         }
-        fn fetch_failing(&mut self, refs: &[PrRef], _t: &str) -> Result<Vec<(PrRef, Vec<Failing>)>, GhError> {
+        fn fetch_failing(&self, refs: &[PrRef], _t: &str) -> Result<Vec<(PrRef, Vec<Failing>)>, GhError> {
             let mut f = self.get();
             *f.calls.entry("failing").or_default() += 1;
             if let Some(e) = f.failing_error.clone() {
@@ -637,7 +689,7 @@ mod tests {
             }
             Ok(refs.iter().map(|r| (r.clone(), f.failing.clone())).collect())
         }
-        fn fetch_commits(&mut self, refs: &[CommitRef], _t: &str) -> Result<CommitBatch, GhError> {
+        fn fetch_commits(&self, refs: &[CommitRef], _t: &str) -> Result<CommitBatch, GhError> {
             let mut f = self.get();
             *f.calls.entry("commits").or_default() += 1;
             f.commit_reads.push(refs.iter().map(|r| r.to_string()).collect());
@@ -656,12 +708,12 @@ mod tests {
                 .collect();
             Ok((out, f.rate.clone()))
         }
-        fn contains(&mut self, _o: &str, _r: &str, _s: &str, _n: &str, _t: &str) -> Result<bool, GhError> {
+        fn contains(&self, _o: &str, _r: &str, _s: &str, _n: &str, _t: &str) -> Result<bool, GhError> {
             let mut f = self.get();
             *f.calls.entry("contains").or_default() += 1;
             f.contains.clone().unwrap_or(Ok(true))
         }
-        fn run_state(&mut self, _o: &str, _r: &str, _run: &str, _t: &str) -> Result<RunState, GhError> {
+        fn run_state(&self, _o: &str, _r: &str, _run: &str, _t: &str) -> Result<RunState, GhError> {
             let mut f = self.get();
             *f.calls.entry("run").or_default() += 1;
             f.run.clone().unwrap_or(Ok((Some("COMPLETED".into()), Some("SUCCESS".into()))))
@@ -806,6 +858,41 @@ mod tests {
         ok(&mut d);
         assert_eq!(gh.calls("prs"), before); // closed and not open any more: not due yet
         assert_eq!(store::read_pr(&api_ref()).unwrap().closed_seen_at, first);
+    }
+
+    #[test]
+    fn open_prs_are_remembered_instead_of_rescanned() {
+        let (_iso, gh, mut d) = setup();
+        ok(&mut d);
+        assert!(d.known_open.as_ref().unwrap().contains(&api_ref()));
+        // a record that appears behind the daemon's back is not picked up by a folder scan every poll
+        let stray = PrRef::new("acme", "api", 77);
+        store::write_pr(
+            &stray,
+            &PrRecord { r: stray.to_string(), summary: summary(&pr(Pr::default())), ..Default::default() },
+        )
+        .unwrap();
+        assert!(!d.tracked().contains(&stray));
+        gh.get().prs.insert(api_ref(), pr(Pr { state: "MERGED", ..Default::default() }));
+        ok(&mut d);
+        assert!(!d.known_open.as_ref().unwrap().contains(&api_ref())); // closed: forgotten
+        let mut fresh = Daemon::with_api(cfg(), Box::new(gh.clone()));
+        assert!(fresh.tracked().contains(&stray)); // a restarted daemon scans the folder once
+    }
+
+    #[test]
+    fn old_files_are_swept_hourly_not_every_poll() {
+        let (_iso, _gh, mut d) = setup();
+        let t = now();
+        d.prune(t).ok();
+        let stale = store::commit_path(&CommitRef::new("acme", "api", "bbbbbbb"));
+        std::fs::write(&stale, "{}").unwrap();
+        let f = std::fs::File::options().write(true).open(&stale).unwrap();
+        f.set_modified(std::time::SystemTime::now() - Duration::from_secs(3 * 86400)).unwrap();
+        d.prune(t + 60.0).ok();
+        assert!(stale.exists()); // the last sweep was a minute ago
+        d.prune(t + SWEEP_EVERY + 1.0).ok();
+        assert!(!stale.exists());
     }
 
     #[test]

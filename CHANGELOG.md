@@ -5,6 +5,22 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- A poll sends GitHub up to 4 requests at a time instead of one after another: the PR and commit batches, and the
+  REST reads of deploy runs and containment, which are now collected across all commits first and asked once each.
+  Answers keep their order, a batch GitHub times out on is still split and retried, and a secondary rate limit pauses
+  polling until GitHub's `Retry-After`.
+- The daemon remembers which PRs are open instead of reading every PR record each poll to find them (1,696 files on
+  the maintainer's machine, 15/10), and sweeps old files hourly instead of every poll. A closed PR's record is deleted
+  a day after it closes, not seven.
+- PR records no longer carry the raw GraphQL fields (`pr`): nothing read them, and each file shrinks to its summary.
+  Older records are still read; anything outside prhub that read `pr` from these files must stop.
+- `prhub status` counts the PR records instead of reading them, and `prhub wait` checks for new state every second
+  (`--poll`, was 3).
+- Releases also carry thin macOS builds, `macos-arm64` and `macos-x86_64` (wheels and binaries), half the size of the
+  universal one, which stays.
+
 ## [0.2.0] - 2026-10-15
 
 ### Changed

@@ -1,14 +1,14 @@
 //! prhub CLI. Everything except `daemon` reads local files only and never calls GitHub.
 
 use crate::commits::{self, CommitRef};
-use crate::conditions::{evaluate, is_done, one_line, CONDITIONS};
+use crate::conditions::{CONDITIONS, evaluate, is_done, one_line};
 use crate::daemon::Daemon;
 use crate::hook;
-use crate::refs::{index_clones, PrRef, RefResolver};
+use crate::refs::{PrRef, RefResolver, index_clones};
 use crate::store::{self, Config, PrRecord};
-use crate::util::{local_hm, py, take, truthy, which, Clock, RealClock};
+use crate::util::{Clock, RealClock, local_hm, py, take, truthy, which};
 use clap::{Parser, Subcommand};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -505,11 +505,7 @@ fn status(io: &mut Io) -> i32 {
         store::pr_file_count(),
         store::commit_watches().len()
     );
-    if healthy {
-        0
-    } else {
-        EXIT_NO_DAEMON
-    }
+    if healthy { 0 } else { EXIT_NO_DAEMON }
 }
 
 fn hook_cmd(io: &mut Io) -> i32 {
@@ -706,11 +702,11 @@ pub fn main(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commits::tests::{node_at, suite, Suite, OID};
+    use crate::commits::tests::{OID, Suite, node_at, suite};
     use crate::conditions::summary;
-    use crate::conditions::tests::{pr, Pr};
+    use crate::conditions::tests::{Pr, pr};
     use crate::github::Failing;
-    use crate::testutil::{healthy_daemon, Isolated};
+    use crate::testutil::{Isolated, healthy_daemon};
     use crate::util::now;
 
     /// Sleeping advances the clock instead of waiting.

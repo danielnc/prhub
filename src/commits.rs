@@ -10,11 +10,11 @@
 //!   one (the daemon asks GitHub's compare API once per new deployment), because a cancelled or batched deploy means
 //!   your own commit may never be deployed by itself.
 
-use crate::refs::{re, RefResolver};
+use crate::refs::{RefResolver, re};
 use crate::util::{dig, s, take, truthy};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::OnceLock;
@@ -723,9 +723,11 @@ pub(crate) mod tests {
         }
         assert!(resolve("mystery@abcdef1", &RefResolver::default()).unwrap_err().contains("unknown repo nickname"));
         assert!(resolve("acme/api#1", &r).unwrap_err().contains("cannot read"));
-        assert!(resolve("@abcdef1", &RefResolver { remote: |_| None, ..Default::default() })
-            .unwrap_err()
-            .contains("not a GitHub clone"));
+        assert!(
+            resolve("@abcdef1", &RefResolver { remote: |_| None, ..Default::default() })
+                .unwrap_err()
+                .contains("not a GitHub clone")
+        );
         assert!(!is_commit_text("acme/api#12") && !is_commit_text("a@b"));
         assert_eq!(parse("acme/api@abcdef1").unwrap().slug(), "acme__api__abcdef1");
         assert_eq!(CommitRef::new("acme", "api", "abc").to_string(), "acme/api@abc");

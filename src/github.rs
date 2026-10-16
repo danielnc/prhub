@@ -413,10 +413,10 @@ impl<T: Transport> Api for GitHub<T> {
             }
             let search = &d["search"];
             for n in search["nodes"].as_array().into_iter().flatten() {
-                if let (Some(nwo), Some(num)) = (n["repository"]["nameWithOwner"].as_str(), n["number"].as_u64()) {
-                    if let Some((owner, repo)) = nwo.split_once('/') {
-                        refs.push(PrRef::new(owner, repo, num));
-                    }
+                if let (Some(nwo), Some(num)) = (n["repository"]["nameWithOwner"].as_str(), n["number"].as_u64())
+                    && let Some((owner, repo)) = nwo.split_once('/')
+                {
+                    refs.push(PrRef::new(owner, repo, num));
                 }
             }
             if !truthy(&search["pageInfo"]["hasNextPage"]) {

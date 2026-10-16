@@ -140,10 +140,10 @@ impl Daemon {
     }
 
     pub fn get_token(&mut self) -> Result<String, GhError> {
-        if let Some(t) = &self.token {
-            if now() - self.token_at < TOKEN_TTL {
-                return Ok(t.clone());
-            }
+        if let Some(t) = &self.token
+            && now() - self.token_at < TOKEN_TTL
+        {
+            return Ok(t.clone());
         }
         match self.api.token() {
             Ok(t) => {
@@ -467,10 +467,10 @@ impl Daemon {
             }
         }
         for rec in store::all_prs() {
-            if rec.closed_seen_at.is_some_and(|c| now - c as f64 > KEEP_CLOSED_FILE) {
-                if let Some(r) = refs::parse(&rec.r) {
-                    let _ = std::fs::remove_file(store::pr_path(&r));
-                }
+            if rec.closed_seen_at.is_some_and(|c| now - c as f64 > KEEP_CLOSED_FILE)
+                && let Some(r) = refs::parse(&rec.r)
+            {
+                let _ = std::fs::remove_file(store::pr_path(&r));
             }
         }
         Ok(())

@@ -376,10 +376,10 @@ pub fn daemon_healthy(max_age: f64) -> bool {
     let d = daemon_state();
     let ok = positive(&d, "last_poll_ok");
     let done = positive(&d, "last_poll_done").or(ok);
-    if let (Some(_), Some(done)) = (ok, done) {
-        if now() - done < max_age {
-            return true;
-        }
+    if let (Some(_), Some(done)) = (ok, done)
+        && now() - done < max_age
+    {
+        return true;
     }
     polling_since(&d).is_some() || rate_limited_until(&d).is_some() || degraded_since(&d).is_some()
 }

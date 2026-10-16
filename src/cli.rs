@@ -120,10 +120,10 @@ macro_rules! say {
 /// Who is waiting, recorded with each watch: PRHUB_CALLER, else a terminal-multiplexer pane id, else "cli".
 pub fn caller() -> String {
     for var in ["PRHUB_CALLER", "HERDR_PANE_ID", "TMUX_PANE"] {
-        if let Ok(v) = std::env::var(var) {
-            if !v.is_empty() {
-                return v;
-            }
+        if let Ok(v) = std::env::var(var)
+            && !v.is_empty()
+        {
+            return v;
         }
     }
     "cli".into()

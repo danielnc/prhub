@@ -169,14 +169,14 @@ pub fn pid_alive(pid: i64) -> bool {
 
 /// `~/x` -> `$HOME/x`.
 pub fn expand_user(p: &str) -> PathBuf {
-    if p == "~" || p.starts_with("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            let mut out = PathBuf::from(home);
-            if p.len() > 2 {
-                out.push(&p[2..]);
-            }
-            return out;
+    if (p == "~" || p.starts_with("~/"))
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        let mut out = PathBuf::from(home);
+        if p.len() > 2 {
+            out.push(&p[2..]);
         }
+        return out;
     }
     PathBuf::from(p)
 }
